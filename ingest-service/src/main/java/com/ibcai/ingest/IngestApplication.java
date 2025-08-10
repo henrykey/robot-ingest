@@ -51,6 +51,16 @@ public class IngestApplication {
     private static final Map<String, AtomicLong> lastThroughputCheck = new ConcurrentHashMap<>();
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
     
+    // 🚀 步骤1&2：全局统计变量（总数+吞吐量）
+    private static final AtomicLong globalTotalMessages = new AtomicLong(0);
+    private static final AtomicLong globalMessagesIn60s = new AtomicLong(0);
+    private static volatile long lastGlobalStatTime = System.currentTimeMillis();
+    private static volatile long throughputStartTime = System.currentTimeMillis();
+    private static final List<Long> recentMessageTimes = Collections.synchronizedList(new ArrayList<>());
+    
+    // 🚀 步骤3：动态日志模式
+    private static volatile String currentLogMode = "LOW";
+    
     // 消息缓冲类
     static class MessageBuffer {
         final String topic;
@@ -229,21 +239,119 @@ public class IngestApplication {
         log.info("🚀 Adaptive High-Frequency Processing initialized successfully");
     }
 
+    // 🚀 步骤1&2：总数统计 + 吞吐量计算（瞬时+平滑）
+    private static void recordMessageReceived(String topicKey) {
+        long currentTime = System.currentTimeMillis();
+        
+        // 1. 累积全局接收数量统计
+        long totalMsgs = globalTotalMessages.incrementAndGet();
+        long msgsIn60s = globalMessagesIn60s.incrementAndGet();
+        
+        // 2. 瞬时吞吐量统计（基于最近2秒）
+        synchronized (recentMessageTimes) {
+            recentMessageTimes.add(currentTime);
+            // 清理超过2秒的记录
+            recentMessageTimes.removeIf(time -> currentTime - time > 2000);
+        }
+        
+        // 3. 每60秒输出平滑统计
+        long timeSinceLastStat = currentTime - lastGlobalStatTime;
+        if (timeSinceLastStat >= 60000) {
+            long messagesIn60s = globalMessagesIn60s.getAndSet(0);
+            long timeSinceStart = currentTime - throughputStartTime;
+            double avgThroughputPerSec = messagesIn60s / 60.0;
+            double totalAvgThroughput = (totalMsgs * 1000.0) / timeSinceStart;
+            
+            lastGlobalStatTime = currentTime;
+            
+            log.info("📊 [GLOBAL-STATS] Total: {} msgs, Last60s: {} msgs, Throughput: {:.1f} msg/s (60s avg), {:.1f} msg/s (total avg)", 
+                totalMsgs, messagesIn60s, avgThroughputPerSec, totalAvgThroughput);
+        }
+    }
+    
+    // 🚀 步骤3：log模式判断 - 根据吞吐量确定日志级别
+    private static String determineLogMode() {
+        int instantRate;
+        synchronized (recentMessageTimes) {
+            instantRate = recentMessageTimes.size() / 2; // 瞬时速率（msg/s）
+        }
+        
+        // 动态调整日志模式
+        String newMode;
+        if (instantRate >= 500) {
+            newMode = "ULTRA"; // 超高频：>500 msg/s
+        } else if (instantRate >= 100) {
+            newMode = "HIGH"; // 高频：100-500 msg/s  
+        } else if (instantRate >= 10) {
+            newMode = "MID"; // 中频：10-100 msg/s
+        } else {
+            newMode = "LOW"; // 低频：<10 msg/s
+        }
+        
+        // 更新全局模式（避免频繁切换）
+        if (!newMode.equals(currentLogMode)) {
+            log.info("🚀 [MODE-SWITCH] {} -> {} (throughput: {} msg/s)", currentLogMode, newMode, instantRate);
+            currentLogMode = newMode;
+        }
+        
+        return currentLogMode;
+    }
+    
+    // 🚀 步骤4：log输出分级 - 根据模式输出不同级别的日志
+    private static void outputMessage(String logMode, String action, String topic, String topicKey, String payload, String details) {
+        switch (logMode) {
+            case "LOW": // 低频：详细日志
+                String preview = payload.length() > 50 ? payload.substring(0, 50) + "..." : payload;
+                log.info("🚀 [{}] topic={} preview=[{}] details={}", action, topic, preview, details);
+                break;
+                
+            case "MID": // 中频：精简日志
+                if (globalTotalMessages.get() % 100 == 0) { // 每100条输出一次
+                    log.info("🚀 [{}] topic={} count={} details={}", action, topicKey, globalTotalMessages.get(), details);
+                }
+                break;
+                
+            case "HIGH": // 高频：统计为主
+                if (globalTotalMessages.get() % 500 == 0) { // 每500条输出一次
+                    int instantRate = recentMessageTimes.size() / 2;
+                    log.info("📊 [STATS] throughput={}msg/s total={} mode={}", instantRate, globalTotalMessages.get(), logMode);
+                }
+                break;
+                
+            case "ULTRA": // 超高频：最少日志
+                if (globalTotalMessages.get() % 2000 == 0) { // 每2000条输出一次
+                    int instantRate = recentMessageTimes.size() / 2;
+                    log.info("📊 [ULTRA-STATS] throughput={}msg/s total={}", instantRate, globalTotalMessages.get());
+                }
+                break;
+        }
+    }
+
     // 🚀 自适应消息处理器 - 动态模式切换
     private static void handleMessageAdaptive(RedisCommands<String,String> R, String topicKey, String topic, byte[] payload, String queue,
                                              boolean dedupeEnable, int globalWindowMin, Map<String,Object> perTopic, boolean logAll, int qos) {
         try {
+            // 📊 步骤1：总数统计 - 在所有处理之前记录消息接收
+            recordMessageReceived(topicKey);
+            
+            // 📊 步骤2：吞吐量计算（在recordMessageReceived中完成）
+            
+            // 📊 步骤3：log模式判断 - 根据当前吞吐量确定日志级别
+            String logMode = determineLogMode();
+            
             String payloadStr = new String(payload, StandardCharsets.UTF_8);
             
             // 检查消息大小限制
             if (payloadStr.length() > maxMessageSizeKB * 1024) {
-                log.warn("🚀 [SIZE-LIMIT] topic={} messageSize={}KB > limit={}KB, dropped", 
-                    topicKey, payloadStr.length() / 1024, maxMessageSizeKB);
+                outputMessage(logMode, "SIZE-LIMIT", topic, topicKey, payloadStr, 
+                    String.format("messageSize=%dKB > limit=%dKB, dropped", payloadStr.length() / 1024, maxMessageSizeKB));
                 return;
             }
             
-            // 更新接收计数
-            long rxCount = rxCounter.get(topicKey).incrementAndGet();
+            // 📊 步骤4：log输出分级 - 根据模式输出不同级别的日志
+            outputMessage(logMode, "RECEIVED", topic, topicKey, payloadStr, "message arrived");
+            
+            // 📦 步骤5：入队列 - 消息进入处理队列
             String deviceId = extractDeviceId(payloadStr, topic);
             
             if (isHighFreqMode.get()) {
@@ -254,23 +362,23 @@ public class IngestApplication {
                 if (!queue_buffer.offer(msgBuffer)) {
                     // 队列满，丢弃消息
                     dropCounter.get(topicKey).incrementAndGet();
-                    if (rxCount % 1000 == 0) {
-                        log.warn("🚀 [HIGH-FREQ] topic={} queue_full, dropped message #{}", topicKey, rxCount);
+                    if (globalTotalMessages.get() % 1000 == 0) {
+                        log.warn("🚀 [HIGH-FREQ] topic={} queue_full, dropped message #{}", topicKey, globalTotalMessages.get());
                     }
                     return;
                 }
                 
                 // 简化日志
-                if (rxCount % 5000 == 0) {
-                    log.info("🚀 [HIGH-FREQ] topic={} rx={} queue_size={}", topicKey, rxCount, queue_buffer.size());
+                if (globalTotalMessages.get() % 5000 == 0) {
+                    log.info("🚀 [HIGH-FREQ] topic={} rx={} queue_size={}", topicKey, globalTotalMessages.get(), queue_buffer.size());
                 }
             } else {
                 // 🚀 正常模式：直接处理
                 handleMessageDirect(R, topicKey, topic, payloadStr, deviceId, queue, dedupeEnable, globalWindowMin, perTopic, logAll);
                 
                 // 正常频率日志
-                if (rxCount % 100 == 0) {
-                    log.debug("🚀 [NORMAL] topic={} rx={} processed_directly", topicKey, rxCount);
+                if (globalTotalMessages.get() % 100 == 0) {
+                    log.debug("🚀 [NORMAL] topic={} rx={} processed_directly", topicKey, globalTotalMessages.get());
                 }
             }
             
