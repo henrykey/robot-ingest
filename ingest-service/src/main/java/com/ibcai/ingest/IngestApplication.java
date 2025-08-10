@@ -1,8 +1,7 @@
 package com.ibcai.ingest;
 
-import com.hivemq.client.mqtt.datatypes.MqttQos;
-import com.hivemq.client.mqtt.MqttClient;
-import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient;
+import org.eclipse.paho.client.mqttv3.*;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import com.ibcai.common.Cfg;
 import com.ibcai.common.ConfigLoader;
 import com.ibcai.common.JsonCoreHasher;
@@ -49,6 +48,9 @@ public class IngestApplication {
     private static final AtomicBoolean isHighFreqMode = new AtomicBoolean(false);
     private static final Map<String, BlockingQueue<MessageBuffer>> messageQueues = new ConcurrentHashMap<>();
     private static final Map<String, AtomicLong> lastThroughputCheck = new ConcurrentHashMap<>();
+    
+    // 🚀 异步消息处理线程池 (参考测试客户端优化)
+    private static final ExecutorService messageProcessor = Executors.newFixedThreadPool(10);
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
     
     // 🚀 步骤1&2：全局统计变量（总数+吞吐量）
@@ -58,8 +60,15 @@ public class IngestApplication {
     private static volatile long throughputStartTime = System.currentTimeMillis();
     private static final List<Long> recentMessageTimes = Collections.synchronizedList(new ArrayList<>());
     
-    // 🚀 步骤3：动态日志模式
+    // 🚀 步骤3：动态日志模式（附加防抖动机制）
     private static volatile String currentLogMode = "LOW";
+    private static long lowModeStartTime = 0;
+    private static long midModeStartTime = 0;  // HIGH/ULTRA→MID的稳定期计时器
+    private static long highModeStartTime = 0; // ULTRA→HIGH的稳定期计时器
+    private static final long LOW_MODE_DELAY = 30000; // MID→LOW需要30秒稳定期
+    private static final long MID_MODE_DELAY = 30000; // HIGH/ULTRA→MID需要30秒稳定期
+    private static final long HIGH_MODE_DELAY = 30000; // ULTRA→HIGH需要30秒稳定期
+    private static final Object modeLock = new Object(); // 🔒 模式切换同步锁
     
     // 消息缓冲类
     static class MessageBuffer {
@@ -149,25 +158,62 @@ public class IngestApplication {
             initializeAdaptiveProcessing(R, queueMap, dedupeEnable, globalWindowMin, perTopic, logAll);
         }
 
-        // 🚀 构建优化的MQTT客户端 - 应用高频连接参数
-        String host = broker.replace("tcp://","").split(":")[0];
-        int port = Integer.parseInt(broker.substring(broker.lastIndexOf(':')+1));
-        
-        Mqtt3AsyncClient mqtt = MqttClient.builder()
-                .useMqttVersion3()
-                .identifier(clientId)
-                .serverHost(host)
-                .serverPort(port)
-                .automaticReconnectWithDefaultConfig()
-                .buildAsync();
-
-        // 定义订阅函数供连接和重连时使用
-        Runnable subscribeAll = () -> {
-            log.info("🚀 MQTT connected to {}, starting optimized subscriptions with maxInflight={}", broker, maxInflight);
+        // 🚀 构建优化的Paho MQTT客户端 - 高性能配置
+        try {
+            MqttClient mqtt = new MqttClient(broker, clientId, new MemoryPersistence());
+            MqttConnectOptions options = new MqttConnectOptions();
+            options.setCleanSession(cleanSession);
+            options.setKeepAliveInterval(keepAliveSec);
+            options.setConnectionTimeout(30);  // 30秒连接超时
+            options.setAutomaticReconnect(true);  // 自动重连
+            options.setMaxInflight(maxInflight);  // 高并发设置
+            
+            // 设置回调处理器
+            mqtt.setCallback(new MqttCallback() {
+                @Override
+                public void connectionLost(Throwable cause) {
+                    log.warn("❌ MQTT connection lost: {}", cause.getMessage());
+                }
+                
+                @Override
+                public void messageArrived(String topic, MqttMessage message) throws Exception {
+                    // 🚀 异步处理消息以提高吞吐量 (参考测试客户端优化)
+                    messageProcessor.submit(() -> {
+                        try {
+                            // 根据topic确定topicKey
+                            String topicKey = getTopicKeyFromRealTopic(topic, topicMap);
+                            if (topicKey != null) {
+                                String queue = queueMap.get(topicKey);
+                                byte[] payload = message.getPayload();
+                                
+                                if (adaptiveEnabled) {
+                                    handleMessageAdaptive(R, topicKey, topic, payload, queue, dedupeEnable, globalWindowMin, perTopic, logAll, message.getQos());
+                                } else {
+                                    handleMessageOptimized(R, topicKey, topic, payload, queue, dedupeEnable, globalWindowMin, perTopic, logAll, message.getQos());
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.error("❌ Error processing message asynchronously: {}", e.getMessage());
+                        }
+                    });
+                }
+                
+                @Override
+                public void deliveryComplete(IMqttDeliveryToken token) {
+                    // 发布消息完成回调（我们只订阅，不需要处理）
+                }
+            });
+            
+            // 连接到MQTT broker
+            log.info("🚀 Connecting to MQTT broker: {}", broker);
+            mqtt.connect(options);
+            log.info("🚀 MQTT connected with optimized settings: keepAlive={}s, cleanSession={}, maxInflight={}", 
+                keepAliveSec, cleanSession, maxInflight);
+            
+            // 订阅所有主题
             for (String topicKey : topicMap.keySet()) {
                 String topic = topicMap.get(topicKey);
                 int qos = qosMap.get(topicKey);
-                String queue = queueMap.get(topicKey);
                 
                 // 初始化计数器
                 rxCounter.putIfAbsent(topicKey, new AtomicLong(0));
@@ -176,37 +222,31 @@ public class IngestApplication {
                 lastThroughputCheck.putIfAbsent(topicKey, new AtomicLong(System.currentTimeMillis()));
                 
                 log.info("🚀 Subscribing to topic: {} qos: {} (adaptive high-frequency enabled={})", topic, qos, adaptiveEnabled);
-                subscribe(mqtt, topic, qos, (realTopic, payload) -> {
-                    if (adaptiveEnabled) {
-                        handleMessageAdaptive(R, topicKey, realTopic, payload, queue, dedupeEnable, globalWindowMin, perTopic, logAll, qos);
-                    } else {
-                        handleMessageOptimized(R, topicKey, realTopic, payload, queue, dedupeEnable, globalWindowMin, perTopic, logAll, qos);
-                    }
-                });
+                mqtt.subscribe(topic, qos);
             }
             
             String mode = adaptiveEnabled ? "ADAPTIVE HIGH-FREQUENCY" : "OPTIMIZED";
             log.info("🚀 All topics subscribed - {} MQTT processing ACTIVE", mode);
-        };
+            log.info("🚀 HIGH-FREQUENCY MQTT INGEST ACTIVE - Connected to MQTT {} and Redis {}:{}", 
+                    broker, redisHost, redisPort);
+            
+        } catch (Exception e) {
+            log.error("❌ Failed to initialize MQTT client: {}", e.getMessage());
+            throw new RuntimeException("MQTT initialization failed", e);
+        }
+    }
 
-        // 🚀 优化的连接配置 - 应用超时和心跳参数
-        mqtt.connectWith()
-                .cleanSession(cleanSession)
-                .keepAlive(keepAliveSec)  // 应用配置的心跳间隔
-                .send()
-                .whenComplete((connAck, throwable) -> {
-                    if (throwable != null) {
-                        log.error("❌ Failed to connect to MQTT: {}", throwable.getMessage());
-                        return;
-                    }
-                    log.info("🚀 MQTT connected with optimized settings: keepAlive={}s, cleanSession={}", 
-                        keepAliveSec, cleanSession);
-                    subscribeAll.run();
-                })
-                .join();
-
-        log.info("🚀 HIGH-FREQUENCY MQTT INGEST ACTIVE - Connected to MQTT {} and Redis {}:{}", 
-            broker, redisHost, redisPort);
+    // 🚀 辅助函数：从实际topic匹配到topicKey
+    private static String getTopicKeyFromRealTopic(String realTopic, Map<String, String> topicMap) {
+        for (Map.Entry<String, String> entry : topicMap.entrySet()) {
+            String pattern = entry.getValue();
+            // 将MQTT通配符模式转换为正则表达式
+            String regex = pattern.replace("+", "[^/]+").replace("#", ".*");
+            if (realTopic.matches(regex)) {
+                return entry.getKey();
+            }
+        }
+        return null; // 未匹配到
     }
 
     // 🚀 初始化自适应高频处理组件
@@ -235,6 +275,15 @@ public class IngestApplication {
             }
         }, 10, 10, TimeUnit.SECONDS);
         
+        // 🚀 启动日志模式切换检查任务（每5秒检查一次）
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                determineLogMode();  // 定期检查并切换模式，避免每条消息都检查
+            } catch (Exception e) {
+                log.error("❌ Error in log mode determination: {}", e.getMessage());
+            }
+        }, 5, 5, TimeUnit.SECONDS);
+        
         log.info("🚀 Adaptive High-Frequency Processing initialized successfully");
     }
 
@@ -255,80 +304,181 @@ public class IngestApplication {
         
         // 3. 每60秒输出统计（但不重置计数器）
         long timeSinceLastStat = currentTime - lastGlobalStatTime;
-        if (timeSinceLastStat >= 60000) {
+        if (timeSinceLastStat >= 10000) {
             long timeSinceStart = currentTime - throughputStartTime;
             double avgThroughputPerSec = msgsIn60s / (timeSinceLastStat / 1000.0);
             double totalAvgThroughput = (totalMsgs * 1000.0) / timeSinceStart;
             
             lastGlobalStatTime = currentTime;
             
-            log.info("📊 [GLOBAL-STATS] Total: {} msgs, CurrentPeriod: {} msgs, Throughput: {:.1f} msg/s (current), {:.1f} msg/s (total avg)", 
-                totalMsgs, msgsIn60s, avgThroughputPerSec, totalAvgThroughput);
+            log.info("📊 [GLOBAL-STATS] Total: {} msgs, CurrentPeriod: {} msgs, Throughput: {} msg/s (current), {} msg/s (total avg)", 
+                totalMsgs, msgsIn60s, String.format("%.1f", avgThroughputPerSec), String.format("%.1f", totalAvgThroughput));
             
             // 重置当前周期计数，为下一个统计周期准备
             globalMessagesIn60s.set(0);
         }
     }
     
-    // 🚀 步骤3：log模式判断 - 根据吞吐量确定日志级别
+    // 🚀 步骤3：log模式判断 - 根据吞吐量确定日志级别（附加防抖动机制）
     private static String determineLogMode() {
-        int instantRate;
-        synchronized (recentMessageTimes) {
-            instantRate = recentMessageTimes.size() / 2; // 瞬时速率（msg/s）
+        synchronized (modeLock) {  // 🔒 确保模式切换的线程安全
+            int instantRate;
+            synchronized (recentMessageTimes) {
+                instantRate = recentMessageTimes.size() / 2; // 瞬时速率（msg/s）
+            }
+            
+            // 动态调整日志模式
+            String newMode;
+            if (instantRate >= 500) {
+                newMode = "ULTRA"; // 超高频：>500 msg/s
+            } else if (instantRate >= 100) {
+                newMode = "HIGH"; // 高频：100-500 msg/s  
+            } else if (instantRate >= 10) {
+                newMode = "MID"; // 中频：10-100 msg/s
+            } else {
+                newMode = "LOW"; // 低频：<10 msg/s
+            }
+        
+        // 🔒 防抖动机制：ULTRA→HIGH需要30秒稳定期
+        if (newMode.equals("HIGH") && currentLogMode.equals("ULTRA")) {
+            if (highModeStartTime == 0) {
+                highModeStartTime = System.currentTimeMillis();
+                // 保持ULTRA模式，不立即切换
+                return currentLogMode;
+            } else if (System.currentTimeMillis() - highModeStartTime < HIGH_MODE_DELAY) {
+                // 还没到30秒，继续保持ULTRA模式
+                return currentLogMode;
+            }
+            // 已经稳定30秒，允许切换到HIGH
+            highModeStartTime = 0;
+        } else if (!newMode.equals("HIGH") || !currentLogMode.equals("ULTRA")) {
+            // 不是从ULTRA切换到HIGH，重置计时器
+            highModeStartTime = 0;
         }
         
-        // 动态调整日志模式
-        String newMode;
-        if (instantRate >= 500) {
-            newMode = "ULTRA"; // 超高频：>500 msg/s
-        } else if (instantRate >= 100) {
-            newMode = "HIGH"; // 高频：100-500 msg/s  
-        } else if (instantRate >= 10) {
-            newMode = "MID"; // 中频：10-100 msg/s
-        } else {
-            newMode = "LOW"; // 低频：<10 msg/s
+        // 🔒 防抖动机制：HIGH/ULTRA→MID需要30秒稳定期
+        if (newMode.equals("MID") && (currentLogMode.equals("HIGH") || currentLogMode.equals("ULTRA"))) {
+            if (midModeStartTime == 0) {
+                midModeStartTime = System.currentTimeMillis();
+                // 保持HIGH/ULTRA模式，不立即切换
+                return currentLogMode;
+            } else if (System.currentTimeMillis() - midModeStartTime < MID_MODE_DELAY) {
+                // 还没到30秒，继续保持HIGH/ULTRA模式
+                return currentLogMode;
+            }
+            // 已经稳定30秒，允许切换到MID
+            midModeStartTime = 0;
+        } else if (!newMode.equals("MID") || !currentLogMode.equals("HIGH") && !currentLogMode.equals("ULTRA")) {
+            // 不是从HIGH/ULTRA切换到MID，重置计时器
+            midModeStartTime = 0;
         }
         
-        // 更新全局模式（避免频繁切换）
-        if (!newMode.equals(currentLogMode)) {
-            log.info("🚀 [MODE-SWITCH] {} -> {} (throughput: {} msg/s)", currentLogMode, newMode, instantRate);
-            currentLogMode = newMode;
+        // 🔒 防抖动机制：MID→LOW需要30秒稳定期
+        if (newMode.equals("LOW") && currentLogMode.equals("MID")) {
+            if (lowModeStartTime == 0) {
+                lowModeStartTime = System.currentTimeMillis();
+                // 保持MID模式，不立即切换
+                return currentLogMode;
+            } else if (System.currentTimeMillis() - lowModeStartTime < LOW_MODE_DELAY) {
+                // 还没到30秒，继续保持MID模式
+                return currentLogMode;
+            }
+            // 已经稳定30秒，允许切换到LOW
+            lowModeStartTime = 0;
+        } else if (!newMode.equals("LOW")) {
+            // 不是切换到LOW，重置计时器
+            lowModeStartTime = 0;
         }
         
-        return currentLogMode;
+            // 更新全局模式（记录切换）
+            if (!newMode.equals(currentLogMode)) {
+                log.info("🚀 [MODE-SWITCH] {} -> {} (throughput: {} msg/s)", currentLogMode, newMode, instantRate);
+                currentLogMode = newMode;
+            }
+            
+            return currentLogMode;
+        }  // 🔒 同步块结束
     }
     
-    // 🚀 步骤4：log输出分级 - 根据模式输出不同级别的日志
+    // 🚀 步骤4：log输出分级 - 精细化控制，最大化高频接收能力
+    private static class LogSampler {
+        private long lastOutputTime = 0;
+        private long lastOutputCount = 0;
+        
+        boolean shouldOutput(String mode, long currentCount) {
+            long now = System.currentTimeMillis();
+            long timeDiff = now - lastOutputTime;
+            long countDiff = currentCount - lastOutputCount;
+            
+            boolean shouldOutput = false;
+            switch (mode) {
+                case "LOW":
+                    // LOW模式：每10条且间隔≥5秒
+                    shouldOutput = (countDiff >= 10 && timeDiff >= 5000);
+                    break;
+                case "MID":
+                    // MID模式：每100条且间隔≥10秒
+                    shouldOutput = (countDiff >= 100 && timeDiff >= 10000);
+                    break;
+                case "HIGH":
+                    // HIGH模式：每1000条且间隔≥10秒
+                    shouldOutput = (countDiff >= 1000 && timeDiff >= 10000);
+                    break;
+                case "ULTRA":
+                    // ULTRA模式：每5000条且间隔≥10秒
+                    shouldOutput = (countDiff >= 5000 && timeDiff >= 10000);
+                    break;
+            }
+            
+            if (shouldOutput) {
+                lastOutputTime = now;
+                lastOutputCount = currentCount;
+            }
+            return shouldOutput;
+        }
+    }
+    
+    // 为各种日志动作分别设置采样器
+    private static LogSampler receivedSampler = new LogSampler();
+    private static LogSampler normalSampler = new LogSampler();
+    private static LogSampler highFreqSampler = new LogSampler();
+    
     private static void outputMessage(String logMode, String action, String topic, String topicKey, String payload, String details) {
         long currentTotal = globalTotalMessages.get();
+        
+        // 根据动作类型选择采样器
+        LogSampler sampler = null;
+        if ("RECEIVED".equals(action)) {
+            sampler = receivedSampler;
+        } else if ("NORMAL".equals(action)) {
+            sampler = normalSampler;
+        } else if ("HIGH-FREQ".equals(action)) {
+            sampler = highFreqSampler;
+        }
+        
+        // 高频模式下使用采样控制，低频模式正常输出
+        if (sampler != null && !sampler.shouldOutput(logMode, currentTotal)) {
+            return; // 不输出
+        }
+        
         switch (logMode) {
             case "LOW": // 低频：详细日志
                 String preview = payload.length() > 50 ? payload.substring(0, 50) + "..." : payload;
-                log.info("🚀 [{}] topic={} preview=[{}] details={}", action, topic, preview, details);
+                log.info("� [{}] topic={} preview=[{}] details={}", action, topic, preview, details);
                 break;
                 
-            case "MID": // 中频：精简日志
-                if (currentTotal % 100 == 0) { // 每100条输出一次
-                    log.info("🚀 [{}] topic={} count={} details={}", action, topicKey, currentTotal, details);
-                }
+            case "MID": // 中频：精简日志（已通过采样控制）
+                log.info("🚀 [{}] topic={} count={} details={}", action, topicKey, currentTotal, details);
                 break;
                 
-            case "HIGH": // 高频：统计为主
-                if (currentTotal % 500 == 0) { // 每500条输出一次
-                    int instantRate = recentMessageTimes.size() / 2;
-                    log.info("📊 [STATS] throughput={}msg/s total={} mode={}", instantRate, currentTotal, logMode);
-                }
-                break;
-                
-            case "ULTRA": // 超高频：最少日志
-                if (currentTotal % 2000 == 0) { // 每2000条输出一次
-                    int instantRate = recentMessageTimes.size() / 2;
-                    log.info("📊 [ULTRA-STATS] throughput={}msg/s total={}", instantRate, currentTotal);
-                }
+            case "HIGH": // 高频：最少日志（已通过采样控制）
+            case "ULTRA": // 超高频：最少日志（已通过采样控制）
+                int instantRate = recentMessageTimes.size() / 2;
+                log.info("📊 [{}] throughput={}msg/s total={} mode={} {}", action, instantRate, currentTotal, logMode, details);
                 break;
             
             default:
-                // 如果模式不匹配，输出调试信息
+                // 未知模式，降低输出频率
                 if (currentTotal % 1000 == 0) {
                     log.warn("🔍 [OUTPUT-DEBUG] Unknown logMode={} total={} action={}", logMode, currentTotal, action);
                 }
@@ -346,15 +496,15 @@ public class IngestApplication {
             // 📊 步骤2：吞吐量计算并检查模式切换
             checkThroughputAndSwitchMode();
             
-            // 📊 步骤3：log模式判断 - 根据当前吞吐量确定日志级别
-            String logMode = determineLogMode();
+            // 📊 步骤3：获取当前log模式（不重复计算，避免竞态条件）
+            String logMode = currentLogMode;
             
             String payloadStr = new String(payload, StandardCharsets.UTF_8);
             
             // 检查消息大小限制
             if (payloadStr.length() > maxMessageSizeKB * 1024) {
-                outputMessage(logMode, "SIZE-LIMIT", topic, topicKey, payloadStr, 
-                    String.format("messageSize=%dKB > limit=%dKB, dropped", payloadStr.length() / 1024, maxMessageSizeKB));
+                // outputMessage(logMode, "SIZE-LIMIT", topic, topicKey, payloadStr, 
+                //     String.format("messageSize=%dKB > limit=%dKB, dropped", payloadStr.length() / 1024, maxMessageSizeKB));
                 return;
             }
             
@@ -363,7 +513,7 @@ public class IngestApplication {
             if (currentTotal % 1000 == 0) {
                 log.info("🔍 [DEBUG-STATS] mode={} total={} recent_times_size={}", logMode, currentTotal, recentMessageTimes.size());
             }
-            outputMessage(logMode, "RECEIVED", topic, topicKey, payloadStr, "message arrived");
+            // outputMessage(logMode, "RECEIVED", topic, topicKey, payloadStr, "message arrived");
             
             // 📦 步骤5：入队列 - 消息进入处理队列
             String deviceId = extractDeviceId(payloadStr, topic);
@@ -382,18 +532,15 @@ public class IngestApplication {
                     return;
                 }
                 
-                // 简化日志
-                if (globalTotalMessages.get() % 5000 == 0) {
-                    log.info("🚀 [HIGH-FREQ] topic={} rx={} queue_size={}", topicKey, globalTotalMessages.get(), queue_buffer.size());
-                }
+                // 使用采样控制的日志输出
+                // outputMessage(logMode, "HIGH-FREQ", topic, topicKey, payloadStr, 
+                //     "queue_size=" + queue_buffer.size());
             } else {
                 // 🚀 正常模式：直接处理
                 handleMessageDirect(R, topicKey, topic, payloadStr, deviceId, queue, dedupeEnable, globalWindowMin, perTopic, logAll);
                 
-                // 正常频率日志
-                if (globalTotalMessages.get() % 100 == 0) {
-                    log.info("🚀 [NORMAL] topic={} rx={} processed_directly", topicKey, globalTotalMessages.get());
-                }
+                // 使用采样控制的日志输出
+                // outputMessage(logMode, "NORMAL", topic, topicKey, payloadStr, "processed_directly");
             }
             
         } catch (Exception e) {
@@ -775,16 +922,19 @@ public class IngestApplication {
 
     interface MsgHandler { void handle(String topic, byte[] payload) throws Exception; }
 
-    private static void subscribe(Mqtt3AsyncClient client, String topic, int qos, MsgHandler handler) {
-        client.subscribeWith()
-                .topicFilter(topic)
-                .qos(MqttQos.fromCode(qos))
-                .callback(msg -> {
-                    try { handler.handle(msg.getTopic().toString(), msg.getPayloadAsBytes()); }
-                    catch (Exception e) { 
-                        log.error("❌ Message handler error: {}", e.getMessage());
-                    }
-                })
-                .send();
+    // Paho MQTT client subscription helper
+    private static void subscribe(MqttClient client, String topic, int qos, MsgHandler handler) {
+        try {
+            client.subscribe(topic, qos, (receivedTopic, message) -> {
+                try { 
+                    handler.handle(receivedTopic, message.getPayload()); 
+                }
+                catch (Exception e) { 
+                    log.error("❌ Message handler error: {}", e.getMessage());
+                }
+            });
+        } catch (MqttException e) {
+            log.error("❌ Failed to subscribe to topic {}: {}", topic, e.getMessage());
+        }
     }
 }

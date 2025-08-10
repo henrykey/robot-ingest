@@ -9,7 +9,7 @@ mqtt:
   cleanSession: true
   connectionTimeoutSec: 30    # 🚀 优化：增加连接超时
   keepAliveSec: 60           # 🚀 优化：增加心跳间隔，减少网络开销
-  maxInflight: 65535         # 🚀 关键优化：从默认1000提升到65535，支持高并发
+  maxInflight: 10000         # 🚀 优化：参考测试客户端，使用10000而非65535
   # 强制高频场景使用QoS=1确保至少传递一次
   qos:
     state: 1        # 🚀 优化：state主题改为QoS=1，确保高频消息不丢失

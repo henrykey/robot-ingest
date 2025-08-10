@@ -26,7 +26,7 @@ services:
       - ./config.yml:/app/config.yml:ro
     environment:
       TZ: Asia/Shanghai
-      LOG_LEVEL_INGEST: DEBUG
+      LOG_LEVEL_INGEST: INFO
       # CFG__batch__sizeTrigger: "500"
     depends_on: [writer]
 
