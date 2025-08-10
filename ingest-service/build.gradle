@@ -1,0 +1,14 @@
+plugins {
+    id 'org.springframework.boot' version '3.3.2'
+}
+
+dependencies {
+    implementation project(':common')
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'com.hivemq:hivemq-mqtt-client:1.3.3'
+    implementation 'io.lettuce:lettuce-core:6.3.2.RELEASE'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.1'  // 🚀 添加Jackson依赖
+
+    runtimeOnly 'ch.qos.logback:logback-classic:1.5.6'
+}

@@ -1,0 +1,133 @@
+app:
+  name: robot-ingest
+  environment: dev
+  timezone: "Asia/Shanghai"
+
+mqtt:
+  brokerUrl: "tcp://192.168.123.61:1883"
+  clientIdPrefix: "ingest-"
+  cleanSession: true
+  connectionTimeoutSec: 30    # 🚀 优化：增加连接超时
+  keepAliveSec: 60           # 🚀 优化：增加心跳间隔，减少网络开销
+  maxInflight: 65535         # 🚀 关键优化：从默认1000提升到65535，支持高并发
+  # 强制高频场景使用QoS=1确保至少传递一次
+  qos:
+    state: 1        # 🚀 优化：state主题改为QoS=1，确保高频消息不丢失
+    connection: 1
+    networkIp: 1
+    error: 1
+    cargo: 1        # 🚀 优化：cargo主题也改为QoS=1
+  topics:
+    state: "robots/+/state"
+    connection: "robots/+/connection"
+    networkIp: "robots/+/network/ip"
+    error: "robots/+/error"
+    cargo: "robots/+/cargo"
+  lwt:
+    enabled: true
+    topicTemplate: "robots/{deviceId}/connection"
+    offlinePayload: '{"connection":"offline"}'
+    qos: 1
+    retain: true
+  reconnectBackoff:
+    initialMs: 500
+    maxMs: 10000
+    multiplier: 2.0
+
+redis:
+  host: "192.168.123.20"
+  port: 6379
+  db: 0
+  timeoutMs: 2000
+  keys:
+    latestTemplate: "robot:latest:{deviceId}"
+    coreHashTemplate: "robot:corehash:{deviceId}"
+    dupsTemplate: "robot:dups:{deviceId}"
+  queues:
+    state: "q:state"
+    connection: "q:connection"
+    networkIp: "q:network_ip"
+    error: "q:error"
+    cargo: "q:cargo"
+  metricsKey: "ingest:metrics"
+  stream:
+    useStream: false
+    consumerGroup: "writer-group"
+    consumerName: "writer-1"
+    maxLen: 1000000
+
+mongodb:
+  uri: "mongodb://192.168.123.46:27017"
+  database: "robotdb"
+  collections:
+    latest: "robot_latest_state"
+    stateEvents: "state_events"
+    connectionEvents: "connection_events"
+    networkIpEvents: "network_ip_events"
+    errorEvents: "error_events"
+    cargoEvents: "cargo_events"
+    ingestMetrics: "ingest_metrics"
+  writeConcern:
+    w: 1
+    j: false
+    wtimeoutMs: 0
+
+dedupe:
+  enable: false  # 🚀 临时禁用去重，测试最高吞吐量
+  positionQuantize:
+    decimals: 6
+  coreFields:
+    - "battery"
+    - "taskStatus"
+    - "taskId"
+    - "autonomousMode"
+    - "fault"
+    - "binsNum"
+    - "coordinateType"
+    - "position"
+  hashAlgo: "murmur3"
+  dropCounterField: "state_dropped"
+  perTopic:
+    state:
+      coreFields: ["battery","taskStatus","taskId","autonomousMode","fault","binsNum","coordinateType","position"]
+      positionQuantize: { decimals: 6 }
+      timeWindowMinutes: 10
+    connection:
+      coreFields: []
+      timeWindowMinutes: 10
+    networkIp:
+      coreFields: ["ip"]
+      timeWindowMinutes: 10
+    error:
+      coreFields: ["code","msg"]
+      timeWindowMinutes: 1
+    cargo:
+      coreFields: ["bins","door"]
+      timeWindowMinutes: 10
+
+logging:
+  logAll: false
+
+batch:
+  sizeTrigger: 1000
+  timeTriggerSec: 60
+  maxPerFlush: 5000
+  backpressure:
+    sleepMsOnBusy: 50
+
+http:
+  port: 8080
+  managementPort: 8081
+  actuator:
+    enabled: true
+    endpoints:
+      - "health"
+      - "metrics"
+      - "prometheus"
+
+logging:
+  level: "DEBUG"
+  level.com.ibcai.ingest: "DEBUG"
+  level.com.ibcai.writer: "DEBUG"
+  redact:
+    secrets: true

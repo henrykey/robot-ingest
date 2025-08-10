@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  writer:
+    build:
+      context: .
+      dockerfile: writer-service/Dockerfile
+    image: ibcai/robot-ingest:writer
+    container_name: robot-ingest-writer
+    restart: unless-stopped
+    network_mode: host  # 🚀 启用主机网络模式
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+    environment:
+      TZ: Asia/Shanghai
+
+  ingest:
+    build:
+      context: .
+      dockerfile: ingest-service/Dockerfile
+    image: ibcai/robot-ingest:ingest
+    container_name: robot-ingest-ingest
+    restart: unless-stopped
+    network_mode: host  # 🚀 启用主机网络模式
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+    environment:
+      TZ: Asia/Shanghai
+      LOG_LEVEL_INGEST: DEBUG
+      # CFG__batch__sizeTrigger: "500"
+    depends_on: [writer]
+
+# 移除网络配置，主机网络模式下不需要
+# networks:
+#   robot_net:
+#     driver: bridge

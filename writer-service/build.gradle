@@ -1,0 +1,13 @@
+plugins {
+    id 'org.springframework.boot' version '3.3.2'
+}
+
+dependencies {
+    implementation project(':common')
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
+    implementation 'io.lettuce:lettuce-core:6.3.2.RELEASE'
+
+    runtimeOnly 'ch.qos.logback:logback-classic:1.5.6'
+}

@@ -1,0 +1,24 @@
+// 必须在最前面
+pluginManagement {
+  repositories {
+    // 优先使用阿里云镜像
+    maven { url = uri("https://maven.aliyun.com/repository/public") }
+    maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+    mavenCentral()
+    gradlePluginPortal()
+    // maven { url = uri("https://repo1.maven.org/maven2") } // 已禁用
+  }
+}
+
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+  repositories {
+    // 优先使用阿里云镜像
+    maven { url = uri("https://maven.aliyun.com/repository/public") }
+    mavenCentral()
+    // maven { url = uri("https://repo1.maven.org/maven2") } // 已禁用
+  }
+}
+
+rootProject.name = 'robot-ingest'
+include 'ingest-service', 'writer-service', 'common'
