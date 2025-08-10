@@ -536,13 +536,13 @@ public class IngestApplication {
         // 批量获取去重状态
         Map<String, String> lastAcceptTimes = new HashMap<>();
         if (!deviceIds.isEmpty()) {
-            List<String> values = R.mget(deviceIds.toArray(new String[0]));
-            int i = 0;
-            for (String key : deviceIds) {
-                if (i < values.size() && values.get(i) != null) {
-                    lastAcceptTimes.put(key, values.get(i));
+            List<String> keysList = new ArrayList<>(deviceIds);
+            for (int i = 0; i < keysList.size(); i++) {
+                String key = keysList.get(i);
+                String value = R.get(key);  // 单独获取每个key
+                if (value != null) {
+                    lastAcceptTimes.put(key, value);
                 }
-                i++;
             }
         }
         
@@ -645,24 +645,6 @@ public class IngestApplication {
         }
         
         enqCounter.get(topicKey).incrementAndGet();
-    }
-
-    // 🚀 超高频消息处理器 - 极简版本（保留向后兼容）
-    private static void handleMessageOptimized(RedisCommands<String,String> R, String topicKey, String topic, byte[] payload, String queue,
-                                               boolean dedupeEnable, int globalWindowMin, Map<String,Object> perTopic, boolean logAll, int qos) {
-        try {
-            String payloadStr = new String(payload, StandardCharsets.UTF_8);
-            String deviceId = extractDeviceId(payloadStr, topic);
-            handleMessageDirect(R, topicKey, topic, payloadStr, deviceId, queue, dedupeEnable, globalWindowMin, perTopic, logAll);
-            
-            long rxCount = rxCounter.get(topicKey).incrementAndGet();
-            if (rxCount % 1000 == 0) {
-                printStatsOptimized(topicKey);
-            }
-            
-        } catch (Exception e) {
-            log.error("❌ [ERROR] topic={} error={}", topic, e.getMessage());
-        }
     }
 
     interface MsgHandler { void handle(String topic, byte[] payload) throws Exception; }
