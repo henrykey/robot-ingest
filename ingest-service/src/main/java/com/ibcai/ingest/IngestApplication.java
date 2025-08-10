@@ -511,7 +511,7 @@ public class IngestApplication {
             // 📊 步骤4：log输出分级 - 根据模式输出不同级别的日志
             long currentTotal = globalTotalMessages.get();
             if (currentTotal % 1000 == 0) {
-                log.info("🔍 [DEBUG-STATS] mode={} total={} recent_times_size={}", logMode, currentTotal, recentMessageTimes.size());
+                log.debug("🔍 [DEBUG-STATS] mode={} total={} recent_times_size={}", logMode, currentTotal, recentMessageTimes.size());
             }
             // outputMessage(logMode, "RECEIVED", topic, topicKey, payloadStr, "message arrived");
             
@@ -527,7 +527,7 @@ public class IngestApplication {
                     // 队列满，丢弃消息
                     dropCounter.get(topicKey).incrementAndGet();
                     if (globalTotalMessages.get() % 1000 == 0) {
-                        log.warn("🚀 [HIGH-FREQ] topic={} queue_full, dropped message #{}", topicKey, globalTotalMessages.get());
+                        log.debug("🚀 [HIGH-FREQ] topic={} queue_full, dropped message #{}", topicKey, globalTotalMessages.get());
                     }
                     return;
                 }
@@ -694,12 +694,12 @@ public class IngestApplication {
             if (!currentMode && shouldBeHighFreq) {
                 // 切换到高频模式
                 isHighFreqMode.set(true);
-                log.info("🚀 [MODE-SWITCH] NORMAL -> HIGH-FREQ, instantThroughput={}msg/s > threshold={}msg/s", 
+                log.debug("🚀 [MODE-SWITCH] NORMAL -> HIGH-FREQ, instantThroughput={}msg/s > threshold={}msg/s", 
                     instantThroughput, normalToHighFreqThreshold);
             } else if (currentMode && shouldBeNormal) {
                 // 切换到正常模式
                 isHighFreqMode.set(false);
-                log.info("🚀 [MODE-SWITCH] HIGH-FREQ -> NORMAL, instantThroughput={}msg/s < threshold={}msg/s", 
+                log.debug("🚀 [MODE-SWITCH] HIGH-FREQ -> NORMAL, instantThroughput={}msg/s < threshold={}msg/s", 
                     instantThroughput, highFreqToNormalThreshold);
                 
                 // 如果吞吐量回落到很低的区域（比如 < 100 msg/s），重置计数器
