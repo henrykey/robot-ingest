@@ -222,13 +222,13 @@ public class IngestApplication {
             scheduler.submit(() -> processMessageQueue(R, topicKey, queueMap.get(topicKey), dedupeEnable, globalWindowMin, perTopic, logAll));
         }
         
-        // 启动统计输出线程（简化版，只输出统计信息）
+        // 启动全局统计输出线程（每10秒输出一次）
         scheduler.scheduleAtFixedRate(() -> {
             long totalMsgs = globalTotalMessages.get();
             if (totalMsgs > 0) {
                 int instantRate;
                 synchronized (recentMessageTimes) {
-                    instantRate = recentMessageTimes.size() / 2;
+                    instantRate = recentMessageTimes.size() / 2;  // 2秒窗口内的消息数/2
                 }
                 String mode = isHighFreqMode.get() ? "HIGH-FREQ" : "NORMAL";
                 log.info("📊 [PERIODIC-STATS] total={}msgs, instantRate={}msg/s, mode={}", totalMsgs, instantRate, mode);
@@ -300,6 +300,7 @@ public class IngestApplication {
     
     // 🚀 步骤4：log输出分级 - 根据模式输出不同级别的日志
     private static void outputMessage(String logMode, String action, String topic, String topicKey, String payload, String details) {
+        long currentTotal = globalTotalMessages.get();
         switch (logMode) {
             case "LOW": // 低频：详细日志
                 String preview = payload.length() > 50 ? payload.substring(0, 50) + "..." : payload;
@@ -307,22 +308,29 @@ public class IngestApplication {
                 break;
                 
             case "MID": // 中频：精简日志
-                if (globalTotalMessages.get() % 100 == 0) { // 每100条输出一次
-                    log.info("🚀 [{}] topic={} count={} details={}", action, topicKey, globalTotalMessages.get(), details);
+                if (currentTotal % 100 == 0) { // 每100条输出一次
+                    log.info("🚀 [{}] topic={} count={} details={}", action, topicKey, currentTotal, details);
                 }
                 break;
                 
             case "HIGH": // 高频：统计为主
-                if (globalTotalMessages.get() % 500 == 0) { // 每500条输出一次
+                if (currentTotal % 500 == 0) { // 每500条输出一次
                     int instantRate = recentMessageTimes.size() / 2;
-                    log.info("📊 [STATS] throughput={}msg/s total={} mode={}", instantRate, globalTotalMessages.get(), logMode);
+                    log.info("📊 [STATS] throughput={}msg/s total={} mode={}", instantRate, currentTotal, logMode);
                 }
                 break;
                 
             case "ULTRA": // 超高频：最少日志
-                if (globalTotalMessages.get() % 2000 == 0) { // 每2000条输出一次
+                if (currentTotal % 2000 == 0) { // 每2000条输出一次
                     int instantRate = recentMessageTimes.size() / 2;
-                    log.info("📊 [ULTRA-STATS] throughput={}msg/s total={}", instantRate, globalTotalMessages.get());
+                    log.info("📊 [ULTRA-STATS] throughput={}msg/s total={}", instantRate, currentTotal);
+                }
+                break;
+            
+            default:
+                // 如果模式不匹配，输出调试信息
+                if (currentTotal % 1000 == 0) {
+                    log.warn("🔍 [OUTPUT-DEBUG] Unknown logMode={} total={} action={}", logMode, currentTotal, action);
                 }
                 break;
         }
@@ -351,6 +359,10 @@ public class IngestApplication {
             }
             
             // 📊 步骤4：log输出分级 - 根据模式输出不同级别的日志
+            long currentTotal = globalTotalMessages.get();
+            if (currentTotal % 1000 == 0) {
+                log.info("🔍 [DEBUG-STATS] mode={} total={} recent_times_size={}", logMode, currentTotal, recentMessageTimes.size());
+            }
             outputMessage(logMode, "RECEIVED", topic, topicKey, payloadStr, "message arrived");
             
             // 📦 步骤5：入队列 - 消息进入处理队列
