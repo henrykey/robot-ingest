@@ -73,7 +73,7 @@ mongodb:
     wtimeoutMs: 0
 
 dedupe:
-  enable: false  # 🚀 临时禁用去重，测试最高吞吐量
+  enable: true  # 🚀 启用去重功能
   positionQuantize:
     decimals: 6
   coreFields:
@@ -107,6 +107,32 @@ dedupe:
 
 logging:
   logAll: false
+
+# 🚀 自适应高频处理配置
+adaptive:
+  enable: true
+  # 消息大小限制
+  maxMessageSizeKB: 16
+  # 吞吐量阈值 (messages/second)
+  thresholds:
+    normalToHighFreq: 1000    # 超过1000 msg/s进入高频模式
+    highFreqToNormal: 500     # 低于500 msg/s退出高频模式
+  # 统计窗口时间
+  statisticsWindow:
+    entranceIntervalSec: 2    # 入口统计间隔
+    exitIntervalSec: 5        # 出口统计间隔
+  # 消息队列配置
+  messageQueue:
+    maxSize: 5000             # 内存队列最大容量
+    batchSize: 100            # 批处理大小
+    timeoutMs: 100            # 批处理超时时间
+    bufferSizeKB: 16          # 单个消息缓冲区大小
+  # 高频模式配置
+  highFreqMode:
+    enableSimplifiedLogging: true    # 启用简化日志
+    dedupeStrategy: "batch"          # 批量去重策略
+    skipDetailedStats: true          # 跳过详细统计
+    logIntervalSec: 10               # 日志输出间隔
 
 batch:
   sizeTrigger: 1000
