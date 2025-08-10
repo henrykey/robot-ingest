@@ -222,19 +222,18 @@ public class IngestApplication {
             scheduler.submit(() -> processMessageQueue(R, topicKey, queueMap.get(topicKey), dedupeEnable, globalWindowMin, perTopic, logAll));
         }
         
-        // 启动吞吐量监控和模式切换线程
+        // 启动统计输出线程（简化版，只输出统计信息）
         scheduler.scheduleAtFixedRate(() -> {
-            for (String topicKey : queueMap.keySet()) {
-                checkThroughputAndSwitchMode(topicKey);
+            long totalMsgs = globalTotalMessages.get();
+            if (totalMsgs > 0) {
+                int instantRate;
+                synchronized (recentMessageTimes) {
+                    instantRate = recentMessageTimes.size() / 2;
+                }
+                String mode = isHighFreqMode.get() ? "HIGH-FREQ" : "NORMAL";
+                log.info("📊 [PERIODIC-STATS] total={}msgs, instantRate={}msg/s, mode={}", totalMsgs, instantRate, mode);
             }
-        }, statisticsIntervalSec, statisticsIntervalSec, TimeUnit.SECONDS);
-        
-        // 启动统计输出线程
-        scheduler.scheduleAtFixedRate(() -> {
-            for (String topicKey : queueMap.keySet()) {
-                printAdaptiveStats(topicKey);
-            }
-        }, 5, 5, TimeUnit.SECONDS);
+        }, 10, 10, TimeUnit.SECONDS);
         
         log.info("🚀 Adaptive High-Frequency Processing initialized successfully");
     }
@@ -254,18 +253,20 @@ public class IngestApplication {
             recentMessageTimes.removeIf(time -> currentTime - time > 2000);
         }
         
-        // 3. 每60秒输出平滑统计
+        // 3. 每60秒输出统计（但不重置计数器）
         long timeSinceLastStat = currentTime - lastGlobalStatTime;
         if (timeSinceLastStat >= 60000) {
-            long messagesIn60s = globalMessagesIn60s.getAndSet(0);
             long timeSinceStart = currentTime - throughputStartTime;
-            double avgThroughputPerSec = messagesIn60s / 60.0;
+            double avgThroughputPerSec = msgsIn60s / (timeSinceLastStat / 1000.0);
             double totalAvgThroughput = (totalMsgs * 1000.0) / timeSinceStart;
             
             lastGlobalStatTime = currentTime;
             
-            log.info("📊 [GLOBAL-STATS] Total: {} msgs, Last60s: {} msgs, Throughput: {:.1f} msg/s (60s avg), {:.1f} msg/s (total avg)", 
-                totalMsgs, messagesIn60s, avgThroughputPerSec, totalAvgThroughput);
+            log.info("📊 [GLOBAL-STATS] Total: {} msgs, CurrentPeriod: {} msgs, Throughput: {:.1f} msg/s (current), {:.1f} msg/s (total avg)", 
+                totalMsgs, msgsIn60s, avgThroughputPerSec, totalAvgThroughput);
+            
+            // 重置当前周期计数，为下一个统计周期准备
+            globalMessagesIn60s.set(0);
         }
     }
     
@@ -334,7 +335,8 @@ public class IngestApplication {
             // 📊 步骤1：总数统计 - 在所有处理之前记录消息接收
             recordMessageReceived(topicKey);
             
-            // 📊 步骤2：吞吐量计算（在recordMessageReceived中完成）
+            // 📊 步骤2：吞吐量计算并检查模式切换
+            checkThroughputAndSwitchMode();
             
             // 📊 步骤3：log模式判断 - 根据当前吞吐量确定日志级别
             String logMode = determineLogMode();
@@ -378,7 +380,7 @@ public class IngestApplication {
                 
                 // 正常频率日志
                 if (globalTotalMessages.get() % 100 == 0) {
-                    log.debug("🚀 [NORMAL] topic={} rx={} processed_directly", topicKey, globalTotalMessages.get());
+                    log.info("🚀 [NORMAL] topic={} rx={} processed_directly", topicKey, globalTotalMessages.get());
                 }
             }
             
@@ -517,39 +519,43 @@ public class IngestApplication {
         return null;
     }
 
-    // 🚀 吞吐量检查和模式切换
-    private static void checkThroughputAndSwitchMode(String topicKey) {
+    // 🚀 吞吐量检查和模式切换 - 使用瞬时吞吐量（2秒窗口）
+    private static void checkThroughputAndSwitchMode() {
         try {
-            long currentTime = System.currentTimeMillis();
-            long lastCheckTime = lastThroughputCheck.get(topicKey).get();
-            long timeDiffSec = (currentTime - lastCheckTime) / 1000;
-            
-            if (timeDiffSec < statisticsIntervalSec) return;
-            
-            long currentRx = rxCounter.get(topicKey).get();
-            long previousRx = lastThroughputCheck.get(topicKey).getAndSet(currentTime);
-            
-            // 计算吞吐量 (msg/s)
-            double throughput = timeDiffSec > 0 ? (double)(currentRx) / ((currentTime - startTime) / 1000.0) : 0;
+            // 获取瞬时吞吐量（基于2秒窗口的消息数）
+            int instantThroughput;
+            synchronized (recentMessageTimes) {
+                instantThroughput = recentMessageTimes.size() / 2; // 瞬时速率（msg/s）
+            }
             
             boolean currentMode = isHighFreqMode.get();
-            boolean shouldBeHighFreq = throughput > normalToHighFreqThreshold;
-            boolean shouldBeNormal = throughput < highFreqToNormalThreshold;
+            boolean shouldBeHighFreq = instantThroughput > normalToHighFreqThreshold;
+            boolean shouldBeNormal = instantThroughput < highFreqToNormalThreshold;
             
             if (!currentMode && shouldBeHighFreq) {
                 // 切换到高频模式
                 isHighFreqMode.set(true);
-                log.info("🚀 [MODE-SWITCH] topic={} NORMAL -> HIGH-FREQ, throughput={}/s > threshold={}/s", 
-                    topicKey, Math.round(throughput), normalToHighFreqThreshold);
+                log.info("🚀 [MODE-SWITCH] NORMAL -> HIGH-FREQ, instantThroughput={}msg/s > threshold={}msg/s", 
+                    instantThroughput, normalToHighFreqThreshold);
             } else if (currentMode && shouldBeNormal) {
                 // 切换到正常模式
                 isHighFreqMode.set(false);
-                log.info("🚀 [MODE-SWITCH] topic={} HIGH-FREQ -> NORMAL, throughput={}/s < threshold={}/s", 
-                    topicKey, Math.round(throughput), highFreqToNormalThreshold);
+                log.info("🚀 [MODE-SWITCH] HIGH-FREQ -> NORMAL, instantThroughput={}msg/s < threshold={}msg/s", 
+                    instantThroughput, highFreqToNormalThreshold);
+                
+                // 如果吞吐量回落到很低的区域（比如 < 100 msg/s），重置计数器
+                if (instantThroughput < 100) {
+                    long totalBeforeReset = globalTotalMessages.get();
+                    globalMessagesIn60s.set(0);
+                    throughputStartTime = System.currentTimeMillis();
+                    lastGlobalStatTime = System.currentTimeMillis();
+                    log.info("🔄 [COUNTER-RESET] Low throughput detected ({}msg/s), counters reset. Total before reset: {}", 
+                        instantThroughput, totalBeforeReset);
+                }
             }
             
         } catch (Exception e) {
-            log.error("❌ [MODE-SWITCH-ERROR] topic={} error={}", topicKey, e.getMessage());
+            log.error("❌ [MODE-SWITCH-ERROR] error={}", e.getMessage());
         }
     }
     
