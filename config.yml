@@ -50,6 +50,13 @@ redis:
     networkIp: "q:network_ip"
     error: "q:error"
     cargo: "q:cargo"
+  # Step 5: Redis Writer 配置
+  writer:
+    enabled: true                       # 启用 Redis 立即入列
+    keyTemplate: "ingest:{topic}:{objectKey}"  # 队列键模板
+    ttlSec: 86400                      # TTL 24小时
+    retryAttempts: 2                   # 轻量重试次数
+    retryDelayMs: 10                   # 重试延迟
   metricsKey: "ingest:metrics"
   stream:
     useStream: false

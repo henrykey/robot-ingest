@@ -13,6 +13,7 @@ import com.ibcai.ingest.queue.Step3ConfigManager;
 import com.ibcai.ingest.queue.DedupeService;
 import com.ibcai.ingest.queue.RedisOutputService;
 import com.ibcai.ingest.queue.LastonePublisher;
+import com.ibcai.ingest.queue.RedisWriter;
 import com.ibcai.ingest.config.IngestFeatureConfig;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
@@ -241,6 +242,9 @@ public class IngestApplication {
             // 🚀 Step 4: 初始化 LastonePublisher
             initializeLastonePublisher(mqtt, cfg);
             
+            // 🚀 Step 5: 初始化 RedisWriter
+            initializeRedisWriter(R, cfg);
+            
             // 🚀 启动步骤1的简单队列处理器
             SimpleQueueProcessor.start();
             
@@ -275,6 +279,50 @@ public class IngestApplication {
             // 设置一个禁用的 LastonePublisher 以避免空指针
             LastonePublisher disabledPublisher = new LastonePublisher(null, "lastone", false);
             Step3ConfigManager.setLastonePublisher(disabledPublisher);
+        }
+    }
+    
+    // 🚀 Step 5: 初始化 RedisWriter
+    private static void initializeRedisWriter(RedisCommands<String, String> redis, Map<String, Object> cfg) {
+        try {
+            // 从配置读取 Redis Writer 设置
+            Map<String, Object> redisConfig = (Map<String, Object>) cfg.get("redis");
+            Map<String, Object> writerConfig = (Map<String, Object>) redisConfig.get("writer");
+            
+            boolean enabled = true;
+            String keyTemplate = "ingest:{topic}:{objectKey}";
+            int ttlSec = 86400;
+            int retryAttempts = 2;
+            long retryDelayMs = 10;
+            
+            if (writerConfig != null) {
+                enabled = Cfg.get(writerConfig, "enabled", true);
+                keyTemplate = Cfg.get(writerConfig, "keyTemplate", "ingest:{topic}:{objectKey}");
+                ttlSec = Cfg.get(writerConfig, "ttlSec", 86400);
+                retryAttempts = Cfg.get(writerConfig, "retryAttempts", 2);
+                
+                // 安全处理 retryDelayMs 的类型转换
+                Object retryDelayObj = writerConfig.getOrDefault("retryDelayMs", 10);
+                if (retryDelayObj instanceof Number) {
+                    retryDelayMs = ((Number) retryDelayObj).longValue();
+                } else {
+                    retryDelayMs = 10L;
+                }
+            }
+            
+            if (enabled) {
+                RedisWriter redisWriter = new RedisWriter(redis, keyTemplate, ttlSec, retryAttempts, retryDelayMs);
+                Step3ConfigManager.setRedisWriter(redisWriter);
+                log.info("🚀 Step 5: RedisWriter initialized - keyTemplate={}, ttlSec={}, retryAttempts={}", 
+                        keyTemplate, ttlSec, retryAttempts);
+            } else {
+                Step3ConfigManager.setRedisWriter(null);
+                log.info("🚀 Step 5: RedisWriter disabled");
+            }
+            
+        } catch (Exception e) {
+            log.error("❌ Failed to initialize RedisWriter: {}", e.getMessage(), e);
+            Step3ConfigManager.setRedisWriter(null);
         }
     }
 

@@ -30,6 +30,9 @@ public class TopicWorker {
     private final LastonePublisher lastonePublisher;
     private final String originalTopic; // 用于构建 lastone 主题
     
+    // Step 5: RedisWriter 服务
+    private final RedisWriter redisWriter;
+    
     // 统计
     private final AtomicLong processedCount = new AtomicLong(0);
     private final AtomicLong droppedCount = new AtomicLong(0);
@@ -43,7 +46,7 @@ public class TopicWorker {
     
     public TopicWorker(String groupKey, RedisCommands<String, String> redis, 
                       Map<String, Object> dedupeConfig, int globalWindowMin, String targetQueueName,
-                      LastonePublisher lastonePublisher, String originalTopic) {
+                      LastonePublisher lastonePublisher, String originalTopic, RedisWriter redisWriter) {
         this.groupKey = groupKey;
         this.inputQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
         this.workerThread = new Thread(this::processMessages, "ingest-topic-" + groupKey);
@@ -57,6 +60,9 @@ public class TopicWorker {
         // Step 4: 初始化 Lastone 发布服务
         this.lastonePublisher = lastonePublisher;
         this.originalTopic = originalTopic;
+        
+        // Step 5: 初始化 RedisWriter 服务
+        this.redisWriter = redisWriter;
     }
     
     /**
@@ -136,7 +142,14 @@ public class TopicWorker {
                     lastonePublisher.publishLastone(message, originalTopic);
                 }
                 
-                // 然后输出到Redis队列
+                // Step 5: 立即写入 Redis 批量队列（供 Writer 落库）
+                if (redisWriter != null) {
+                    String topicForRedis = extractTopicFromGroupKey(groupKey);
+                    String objectKey = message.getDeviceId();
+                    redisWriter.writeImmediate(message, topicForRedis, objectKey);
+                }
+                
+                // 然后输出到Redis队列（现有逻辑）
                 boolean redisSuccess = redisOutputService.outputToQueue(message, targetQueueName);
                 
                 if (redisSuccess) {
@@ -167,6 +180,15 @@ public class TopicWorker {
         } catch (Exception e) {
             log.error("❌ Error processing message in TopicWorker[{}]: {}", groupKey, e.getMessage());
         }
+    }
+    
+    /**
+     * 从 groupKey 提取主题名
+     * groupKey 格式: "state:test001" -> "state"
+     */
+    private String extractTopicFromGroupKey(String groupKey) {
+        int colonIndex = groupKey.indexOf(':');
+        return colonIndex > 0 ? groupKey.substring(0, colonIndex) : groupKey;
     }
     
     /**

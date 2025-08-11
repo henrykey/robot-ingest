@@ -155,7 +155,7 @@ public class Dispatcher {
             // 步骤3：检查配置管理器是否已初始化
             if (!Step3ConfigManager.isInitialized()) {
                 log.warn("⚠️ Step3ConfigManager not initialized, creating worker without Redis/Dedupe");
-                worker = new TopicWorker(groupKey, null, null, 5, "q:unknown", null, "unknown");
+                worker = new TopicWorker(groupKey, null, null, 5, "q:unknown", null, "unknown", null);
             } else {
                 // 从groupKey提取topicKey
                 String topicKey = groupKey.split(":")[0];
@@ -169,8 +169,11 @@ public class Dispatcher {
                 LastonePublisher lastonePublisher = Step3ConfigManager.getLastonePublisher();
                 String originalTopic = reconstructOriginalTopic(groupKey);
                 
+                // Step 5: 获取 RedisWriter
+                RedisWriter redisWriter = Step3ConfigManager.getRedisWriter();
+                
                 worker = new TopicWorker(groupKey, redis, dedupeConfig, globalWindowMin, targetQueue, 
-                                       lastonePublisher, originalTopic);
+                                       lastonePublisher, originalTopic, redisWriter);
             }
             
             worker.start();

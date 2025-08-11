@@ -26,6 +26,9 @@ public class Step3ConfigManager {
     // Step 4: Lastone 发布服务
     private static volatile LastonePublisher lastonePublisher;
     
+    // Step 5: RedisWriter 服务
+    private static volatile RedisWriter redisWriter;
+    
     /**
      * 初始化配置（从IngestApplication调用）
      */
@@ -145,5 +148,21 @@ public class Step3ConfigManager {
      */
     public static LastonePublisher getLastonePublisher() {
         return lastonePublisher;
+    }
+    
+    /**
+     * Step 5: 设置 RedisWriter
+     */
+    public static void setRedisWriter(RedisWriter writer) {
+        redisWriter = writer;
+        log.info("🔧 Step3ConfigManager: RedisWriter set, enabled={}", 
+                writer != null ? "true" : "false");
+    }
+    
+    /**
+     * Step 5: 获取 RedisWriter
+     */
+    public static RedisWriter getRedisWriter() {
+        return redisWriter;
     }
 }
