@@ -91,6 +91,13 @@ public class GlobalQueue {
     }
     
     /**
+     * 获取入队总数
+     */
+    public static long getOfferedCount() {
+        return totalOffered.get();
+    }
+    
+    /**
      * 重置计数器（测试用）
      */
     public static void resetCounters() {

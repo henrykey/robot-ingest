@@ -24,6 +24,7 @@ public class SimpleQueueProcessor {
     });
     
     private static volatile boolean started = false;
+    private static volatile long lastOffered = 0;  // 用于判断GlobalQueue是否有新活动
     
     /**
      * 启动处理器 - 步骤2：启动Dispatcher
@@ -43,11 +44,17 @@ public class SimpleQueueProcessor {
         // 步骤2：启动Dispatcher代替原来的简单处理
         Dispatcher.start();
         
-        // 每10秒输出统计（包含Dispatcher和GlobalQueue状态）
+        // 每10秒输出统计（仅当有新活动时）
         scheduler.scheduleAtFixedRate(() -> {
             String globalStats = GlobalQueue.getStats();
             String dispatcherStats = Dispatcher.getStats();
-            log.info("📊 Step2 stats: {} | {}", globalStats, dispatcherStats);
+            
+            // 检查GlobalQueue是否有新的offered消息
+            long currentOffered = GlobalQueue.getOfferedCount(); // 需要添加这个方法
+            if (currentOffered > lastOffered) {
+                log.info("📊 Step2 stats: {} | {}", globalStats, dispatcherStats);
+                lastOffered = currentOffered;
+            }
         }, 10, 10, TimeUnit.SECONDS);
         
         log.info("🚀 SimpleQueueProcessor started (Step 2: with Dispatcher)");

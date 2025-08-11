@@ -57,6 +57,7 @@ public class IngestApplication {
     private static final AtomicLong globalMessagesIn60s = new AtomicLong(0);
     private static volatile long lastGlobalStatTime = System.currentTimeMillis();
     private static volatile long throughputStartTime = System.currentTimeMillis();
+    private static volatile long lastGlobalTotalMessages = 0; // 用于判断globalTotalMessages是否增加
     private static final List<Long> recentMessageTimes = Collections.synchronizedList(new ArrayList<>());
     
     // 🚀 步骤3：动态日志模式（附加防抖动机制）
@@ -304,14 +305,16 @@ public class IngestApplication {
             recentMessageTimes.removeIf(time -> currentTime - time > 2000);
         }
         
-        // 3. 每60秒输出统计（但不重置计数器）
+        // 3. 每10秒输出统计（仅当globalTotalMessages增加时）
         long timeSinceLastStat = currentTime - lastGlobalStatTime;
-        if (timeSinceLastStat >= 10000) {
+        long currentGlobalTotal = globalTotalMessages.get();
+        if (timeSinceLastStat >= 10000 && currentGlobalTotal > lastGlobalTotalMessages) {
             long timeSinceStart = currentTime - throughputStartTime;
             double avgThroughputPerSec = msgsIn60s / (timeSinceLastStat / 1000.0);
             double totalAvgThroughput = (totalMsgs * 1000.0) / timeSinceStart;
             
             lastGlobalStatTime = currentTime;
+            lastGlobalTotalMessages = currentGlobalTotal; // 更新上次记录的总数
             
             log.info("📊 [GLOBAL-STATS] Total: {} msgs, CurrentPeriod: {} msgs, Throughput: {} msg/s (current), {} msg/s (total avg)", 
                 totalMsgs, msgsIn60s, String.format("%.1f", avgThroughputPerSec), String.format("%.1f", totalAvgThroughput));

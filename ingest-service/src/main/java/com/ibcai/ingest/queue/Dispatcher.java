@@ -34,6 +34,7 @@ public class Dispatcher {
     // 统计
     private static final AtomicLong totalDispatched = new AtomicLong(0);
     private static final AtomicLong batchCount = new AtomicLong(0);
+    private static volatile long lastDispatched = 0;  // 用于判断是否有新分发活动
     
     private static volatile boolean started = false;
     
@@ -67,13 +68,14 @@ public class Dispatcher {
             }
         }, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
         
-        // 统计输出
+        // 统计输出（仅当有新分发活动时）
         scheduler.scheduleAtFixedRate(() -> {
             long dispatched = totalDispatched.get();
             long batches = batchCount.get();
-            if (dispatched > 0) {
+            if (dispatched > lastDispatched) {
                 log.info("📊 Dispatcher stats: dispatched={}, batches={}, workers={}", 
                         dispatched, batches, topicWorkers.size());
+                lastDispatched = dispatched;
             }
         }, 10, 10, TimeUnit.SECONDS);
         
