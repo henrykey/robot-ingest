@@ -27,6 +27,9 @@ mqtt:
     offlinePayload: '{"connection":"offline"}'
     qos: 1
     retain: true
+  lastone:
+    enabled: true                       # Step 4: 启用 lastone 发布
+    topicPrefix: "lastone"              # lastone 主题前缀
   reconnectBackoff:
     initialMs: 500
     maxMs: 10000

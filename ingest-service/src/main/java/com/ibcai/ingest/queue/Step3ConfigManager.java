@@ -3,6 +3,7 @@ package com.ibcai.ingest.queue;
 import com.ibcai.common.Cfg;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
+import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +22,9 @@ public class Step3ConfigManager {
     private static volatile Map<String, String> queueMap;
     private static volatile int globalWindowMin;
     private static volatile boolean initialized = false;
+    
+    // Step 4: Lastone 发布服务
+    private static volatile LastonePublisher lastonePublisher;
     
     /**
      * 初始化配置（从IngestApplication调用）
@@ -125,5 +129,21 @@ public class Step3ConfigManager {
      */
     public static boolean isInitialized() {
         return initialized;
+    }
+    
+    /**
+     * Step 4: 设置 LastonePublisher
+     */
+    public static void setLastonePublisher(LastonePublisher publisher) {
+        lastonePublisher = publisher;
+        log.info("🔧 Step3ConfigManager: LastonePublisher set, enabled={}", 
+                publisher != null ? "true" : "false");
+    }
+    
+    /**
+     * Step 4: 获取 LastonePublisher
+     */
+    public static LastonePublisher getLastonePublisher() {
+        return lastonePublisher;
     }
 }

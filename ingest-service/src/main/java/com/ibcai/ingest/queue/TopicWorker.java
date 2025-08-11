@@ -26,6 +26,10 @@ public class TopicWorker {
     private final RedisOutputService redisOutputService;
     private final String targetQueueName;
     
+    // Step 4: Lastone 发布服务
+    private final LastonePublisher lastonePublisher;
+    private final String originalTopic; // 用于构建 lastone 主题
+    
     // 统计
     private final AtomicLong processedCount = new AtomicLong(0);
     private final AtomicLong droppedCount = new AtomicLong(0);
@@ -38,7 +42,8 @@ public class TopicWorker {
     private static final int QUEUE_CAPACITY = 1000;
     
     public TopicWorker(String groupKey, RedisCommands<String, String> redis, 
-                      Map<String, Object> dedupeConfig, int globalWindowMin, String targetQueueName) {
+                      Map<String, Object> dedupeConfig, int globalWindowMin, String targetQueueName,
+                      LastonePublisher lastonePublisher, String originalTopic) {
         this.groupKey = groupKey;
         this.inputQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
         this.workerThread = new Thread(this::processMessages, "ingest-topic-" + groupKey);
@@ -48,6 +53,10 @@ public class TopicWorker {
         this.dedupeService = new DedupeService(redis, dedupeConfig, globalWindowMin);
         this.redisOutputService = new RedisOutputService(redis);
         this.targetQueueName = targetQueueName;
+        
+        // Step 4: 初始化 Lastone 发布服务
+        this.lastonePublisher = lastonePublisher;
+        this.originalTopic = originalTopic;
     }
     
     /**
@@ -122,7 +131,12 @@ public class TopicWorker {
             DedupeService.DedupeResult dedupeResult = dedupeService.processMessage(message);
             
             if (dedupeResult.shouldKeep) {
-                // 唯一消息，输出到Redis队列
+                // Step 4: 先发布到 lastone 主题（retain=true）
+                if (lastonePublisher != null) {
+                    lastonePublisher.publishLastone(message, originalTopic);
+                }
+                
+                // 然后输出到Redis队列
                 boolean redisSuccess = redisOutputService.outputToQueue(message, targetQueueName);
                 
                 if (redisSuccess) {

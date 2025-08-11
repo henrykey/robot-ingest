@@ -12,6 +12,7 @@ import com.ibcai.ingest.queue.Dispatcher;
 import com.ibcai.ingest.queue.Step3ConfigManager;
 import com.ibcai.ingest.queue.DedupeService;
 import com.ibcai.ingest.queue.RedisOutputService;
+import com.ibcai.ingest.queue.LastonePublisher;
 import com.ibcai.ingest.config.IngestFeatureConfig;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
@@ -237,12 +238,43 @@ public class IngestApplication {
             // 🚀 步骤3：初始化侧挂架构配置管理器
             Step3ConfigManager.initialize(cfg);
             
+            // 🚀 Step 4: 初始化 LastonePublisher
+            initializeLastonePublisher(mqtt, cfg);
+            
             // 🚀 启动步骤1的简单队列处理器
             SimpleQueueProcessor.start();
             
         } catch (Exception e) {
             log.error("❌ Failed to initialize MQTT client: {}", e.getMessage());
             throw new RuntimeException("MQTT initialization failed", e);
+        }
+    }
+    
+    // 🚀 Step 4: 初始化 LastonePublisher
+    private static void initializeLastonePublisher(MqttClient mqtt, Map<String, Object> cfg) {
+        try {
+            // 从配置读取 lastone 设置
+            Map<String, Object> mqttConfig = (Map<String, Object>) cfg.get("mqtt");
+            Map<String, Object> lastoneConfig = (Map<String, Object>) mqttConfig.get("lastone");
+            
+            boolean enabled = false;
+            String topicPrefix = "lastone";
+            
+            if (lastoneConfig != null) {
+                enabled = (boolean) lastoneConfig.getOrDefault("enabled", false);
+                topicPrefix = (String) lastoneConfig.getOrDefault("topicPrefix", "lastone");
+            }
+            
+            LastonePublisher lastonePublisher = new LastonePublisher(mqtt, topicPrefix, enabled);
+            Step3ConfigManager.setLastonePublisher(lastonePublisher);
+            
+            log.info("🚀 Step 4: LastonePublisher initialized - enabled={}, prefix={}", enabled, topicPrefix);
+            
+        } catch (Exception e) {
+            log.error("❌ Failed to initialize LastonePublisher: {}", e.getMessage(), e);
+            // 设置一个禁用的 LastonePublisher 以避免空指针
+            LastonePublisher disabledPublisher = new LastonePublisher(null, "lastone", false);
+            Step3ConfigManager.setLastonePublisher(disabledPublisher);
         }
     }
 

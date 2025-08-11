@@ -155,7 +155,7 @@ public class Dispatcher {
             // 步骤3：检查配置管理器是否已初始化
             if (!Step3ConfigManager.isInitialized()) {
                 log.warn("⚠️ Step3ConfigManager not initialized, creating worker without Redis/Dedupe");
-                worker = new TopicWorker(groupKey, null, null, 5, "q:unknown");
+                worker = new TopicWorker(groupKey, null, null, 5, "q:unknown", null, "unknown");
             } else {
                 // 从groupKey提取topicKey
                 String topicKey = groupKey.split(":")[0];
@@ -165,7 +165,12 @@ public class Dispatcher {
                 int globalWindowMin = Step3ConfigManager.getGlobalWindowMin();
                 String targetQueue = Step3ConfigManager.getTargetQueue(topicKey);
                 
-                worker = new TopicWorker(groupKey, redis, dedupeConfig, globalWindowMin, targetQueue);
+                // Step 4: 获取 LastonePublisher 和构建原始主题
+                LastonePublisher lastonePublisher = Step3ConfigManager.getLastonePublisher();
+                String originalTopic = reconstructOriginalTopic(groupKey);
+                
+                worker = new TopicWorker(groupKey, redis, dedupeConfig, globalWindowMin, targetQueue, 
+                                       lastonePublisher, originalTopic);
             }
             
             worker.start();
@@ -180,10 +185,25 @@ public class Dispatcher {
      */
     public static String getStats() {
         return String.format("Dispatcher[dispatched=%d, batches=%d, workers=%d]", 
-                           totalDispatched.get(), batchCount.get(), topicWorkers.size());
+                totalDispatched.get(), batchCount.get(), topicWorkers.size());
     }
     
     /**
+     * Step 4: 从 groupKey 重建原始主题
+     * groupKey 格式：topicKey:objectKey （如：state:test001）
+     * 重建为：robots/objectKey/topicKey （如：robots/test001/state）
+     */
+    private static String reconstructOriginalTopic(String groupKey) {
+        String[] parts = groupKey.split(":", 2);
+        if (parts.length != 2) {
+            return "unknown/" + groupKey;
+        }
+        
+        String topicKey = parts[0];
+        String objectKey = parts[1];
+        
+        return String.format("robots/%s/%s", objectKey, topicKey);
+    }    /**
      * 停止分发器（用于测试）
      */
     public static synchronized void stop() {
