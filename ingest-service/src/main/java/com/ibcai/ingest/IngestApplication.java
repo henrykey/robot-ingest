@@ -33,12 +33,6 @@ public class IngestApplication {
     // 设备ID提取正则
     private static final Pattern DEVICE_ID_PATTERN = Pattern.compile("robots/([^/]+)/");
     
-    // 统计计数器
-    private static final Map<String, AtomicLong> rxCounter = new ConcurrentHashMap<>();
-    private static final Map<String, AtomicLong> enqCounter = new ConcurrentHashMap<>();
-    private static final Map<String, AtomicLong> dropCounter = new ConcurrentHashMap<>();
-    private static final long startTime = System.currentTimeMillis();
-    
     // 🚀 自适应高频处理组件
     private static boolean adaptiveEnabled = false;
     private static int maxMessageSizeKB = 16;
@@ -148,10 +142,11 @@ public class IngestApplication {
             "cargo",      Cfg.get(cfg, "mqtt.qos.cargo", 1)       // 🚀 默认QoS=1
         );
 
-        // 🚫 原有去重功能已移除，由新的侧挂去重功能替代
-        boolean dedupeEnable = false;  // 强制禁用旧去重功能
-        int globalWindowMin = 10;      // 保留参数避免编译错误
-        Map<String, Object> perTopic = Collections.emptyMap();  // 保留参数避免编译错误
+        // 获取去重配置（保留参数避免编译错误）
+        Map<String, Object> dedupeMap = (Map<String, Object>) cfg.getOrDefault("dedupe", Collections.emptyMap());
+        boolean dedupeEnable = Boolean.TRUE.equals(dedupeMap.getOrDefault("enable", false));
+        int globalWindowMin = ((Number) dedupeMap.getOrDefault("timeWindowMinutes", 10)).intValue();
+        Map<String, Object> perTopic = (Map<String, Object>) dedupeMap.getOrDefault("perTopic", Collections.emptyMap());
 
         // logAll 配置
         Map<String, Object> logging = (Map<String, Object>) cfg.getOrDefault("logging", Collections.emptyMap());
@@ -193,11 +188,8 @@ public class IngestApplication {
                                 String queue = queueMap.get(topicKey);
                                 byte[] payload = message.getPayload();
                                 
-                                if (adaptiveEnabled) {
-                                    handleMessageAdaptive(R, topicKey, topic, payload, queue, dedupeEnable, globalWindowMin, perTopic, logAll, message.getQos());
-                                } else {
-                                    handleMessageOptimized(R, topicKey, topic, payload, queue, dedupeEnable, globalWindowMin, perTopic, logAll, message.getQos());
-                                }
+                                // 🚀 所有消息都通过新的sidecar架构处理
+                                handleMessageAdaptive(R, topicKey, topic, payload, queue, dedupeEnable, globalWindowMin, perTopic, logAll, message.getQos());
                             }
                         } catch (Exception e) {
                             log.error("❌ Error processing message asynchronously: {}", e.getMessage());
@@ -223,9 +215,6 @@ public class IngestApplication {
                 int qos = qosMap.get(topicKey);
                 
                 // 初始化计数器
-                rxCounter.putIfAbsent(topicKey, new AtomicLong(0));
-                enqCounter.putIfAbsent(topicKey, new AtomicLong(0));
-                dropCounter.putIfAbsent(topicKey, new AtomicLong(0));
                 lastThroughputCheck.putIfAbsent(topicKey, new AtomicLong(System.currentTimeMillis()));
                 
                 log.info("🚀 Subscribing to topic: {} qos: {} (adaptive high-frequency enabled={})", topic, qos, adaptiveEnabled);
@@ -538,7 +527,6 @@ public class IngestApplication {
                 
                 if (!queue_buffer.offer(msgBuffer)) {
                     // 队列满，丢弃消息
-                    dropCounter.get(topicKey).incrementAndGet();
                     if (globalTotalMessages.get() % 1000 == 0) {
                         log.debug("🚀 [HIGH-FREQ] topic={} queue_full, dropped message #{}", topicKey, globalTotalMessages.get());
                     }
@@ -560,94 +548,6 @@ public class IngestApplication {
             log.error("❌ [ADAPTIVE-ERROR] topic={} error={}", topic, e.getMessage());
         }
     }
-    private static void handleMessageOptimized(RedisCommands<String,String> R, String topicKey, String topic, byte[] payload, String queue,
-                                               boolean dedupeEnable, int globalWindowMin, Map<String,Object> perTopic, boolean logAll, int qos) {
-        try {
-            String payloadStr = new String(payload, StandardCharsets.UTF_8);
-            
-            // 更新接收计数
-            long rxCount = rxCounter.get(topicKey).incrementAndGet();
-            
-            // 🚀 FAST MODE: 如果不启用去重，直接入队（最高性能）
-            if (!dedupeEnable) {
-                R.lpush(queue, payloadStr);
-                if (logAll) {
-                    R.lpush("q:raw:" + topicKey, payloadStr);
-                }
-                enqCounter.get(topicKey).incrementAndGet();
-                
-                // 📊 统计输出（降低频率）
-                if (rxCount % 1000 == 0) {
-                    printStatsOptimized(topicKey);
-                    log.info("🚀 [FAST-MODE] topic={} rx={} - NO DEDUP, MAX THROUGHPUT", topicKey, rxCount);
-                }
-                return;
-            }
-            
-            // 🚀 去重模式：简化设备ID提取和去重逻辑
-            String deviceId = extractDeviceId(payloadStr, topic);
-            if (deviceId == null || deviceId.isEmpty()) {
-                // 无deviceId直接入队，不做去重
-                R.lpush(queue, payloadStr);
-                enqCounter.get(topicKey).incrementAndGet();
-                return;
-            }
-
-            // � 旧的去重逻辑已禁用，所有消息直接入队
-            if (!dedupeEnable) {
-                // 去重禁用，直接入队
-                R.lpush(queue, payloadStr);
-                enqCounter.get(topicKey).incrementAndGet();
-                return;
-            }
-
-            // �🚀 简化去重：只使用基于时间的去重，不计算复杂hash
-            String lastTsKey = "dedupe:" + topicKey + ":" + deviceId;
-            long nowMs = System.currentTimeMillis();
-            
-            // 读取窗口配置（简化）
-            Map<String,Object> topicConf = (Map<String,Object>) perTopic.getOrDefault(topicKey, Collections.emptyMap());
-            int windowMin = topicConf.containsKey("timeWindowMinutes") ?
-                    ((Number)topicConf.get("timeWindowMinutes")).intValue() : globalWindowMin;
-            
-            // 🚀 单次Redis查询检查时间窗口
-            String lastAcceptMsStr = R.get(lastTsKey);
-            long lastAcceptMs = lastAcceptMsStr == null ? 0 : Long.parseLong(lastAcceptMsStr);
-            
-            boolean within = lastAcceptMs > 0 && (nowMs - lastAcceptMs) < windowMin * 60_000;
-            
-            if (within) {
-                // 🚀 时间窗口内丢弃 - 最少Redis操作
-                dropCounter.get(topicKey).incrementAndGet();
-                
-                // � 降低日志频率
-                if (rxCount % 1000 == 0) {
-                    printStatsOptimized(topicKey);
-                }
-                return;
-            }
-
-            // 🚀 有效消息 - 最少Redis操作
-            R.set(lastTsKey, String.valueOf(nowMs));  // 只更新时间戳
-            R.lpush(queue, payloadStr);               // 入队
-            if (logAll) {
-                R.lpush("q:raw:" + topicKey, payloadStr);
-            }
-            
-            enqCounter.get(topicKey).incrementAndGet();
-            
-            // � 统计输出（降低频率）
-            if (rxCount % 1000 == 0) {
-                printStatsOptimized(topicKey);
-                if (log.isDebugEnabled()) {
-                    log.debug("🚀 [BATCH-1000] topic={} deviceId={} processed_1000_messages", topic, deviceId);
-                }
-            }
-            
-        } catch (Exception e) {
-            log.error("❌ [ERROR] topic={} error={}", topic, e.getMessage());
-        }
-    }
 
     // 🚀 生成 payload 预览（优化版本）
     private static String createPayloadPreview(String payloadStr) {
@@ -657,23 +557,7 @@ public class IngestApplication {
     }
     
     // 🚀 优化的统计输出 - 专为高频场景设计
-    private static void printStatsOptimized(String topicKey) {
-        long rx = rxCounter.get(topicKey).get();
-        long enq = enqCounter.get(topicKey).get();
-        long drop = dropCounter.get(topicKey).get();
-        
-        // 🚀 修正：处理总数 = 入队 + 去重丢弃（都是成功接收并处理的消息）
-        long processed = enq + drop;
-        double processRate = rx > 0 ? (double) processed / rx * 100 : 0;
-        double dropRate = processed > 0 ? (double) drop / processed * 100 : 0;
-        double throughput = rx / ((System.currentTimeMillis() - startTime) / 1000.0); // MQTT接收吞吐量（消息/秒）
-        
-        log.info("🚀 [STATS] topic={} rx={} processed={} enq={} drop={} process_rate={}% dedup_rate={}% throughput={}/s", 
-            topicKey, rx, processed, enq, drop, 
-            Math.round(processRate * 10) / 10.0, 
-            Math.round(dropRate * 10) / 10.0, 
-            Math.round(throughput * 10) / 10.0);
-    }
+
 
     // 设备ID提取：优先 payload.deviceId，否则从 topic 解析
     private static String extractDeviceId(String payloadStr, String topic) {
@@ -742,30 +626,18 @@ public class IngestApplication {
     // 🚀 自适应统计输出
     private static void printAdaptiveStats(String topicKey) {
         try {
-            long rx = rxCounter.get(topicKey).get();
-            long enq = enqCounter.get(topicKey).get();
-            long drop = dropCounter.get(topicKey).get();
-            
-            long processed = enq + drop;
-            double processRate = rx > 0 ? (double) processed / rx * 100 : 0;
-            double dropRate = processed > 0 ? (double) drop / processed * 100 : 0;
-            double throughput = rx / ((System.currentTimeMillis() - startTime) / 1000.0);
-            
             BlockingQueue<MessageBuffer> queue = messageQueues.get(topicKey);
             int queueSize = queue != null ? queue.size() : 0;
             String mode = isHighFreqMode.get() ? "HIGH-FREQ" : "NORMAL";
             
             if (isHighFreqMode.get()) {
                 // 高频模式简化日志
-                log.info("🚀 [ADAPTIVE-{}] topic={} rx={} queue={} throughput={}/s", 
-                    mode, topicKey, rx, queueSize, Math.round(throughput));
+                log.info("🚀 [ADAPTIVE-{}] topic={} queue={}", 
+                    mode, topicKey, queueSize);
             } else {
-                // 正常模式详细日志
-                log.info("🚀 [ADAPTIVE-{}] topic={} rx={} processed={} enq={} drop={} process_rate={}% dedup_rate={}% throughput={}/s", 
-                    mode, topicKey, rx, processed, enq, drop, 
-                    Math.round(processRate * 10) / 10.0, 
-                    Math.round(dropRate * 10) / 10.0, 
-                    Math.round(throughput * 10) / 10.0);
+                // 正常模式简化日志
+                log.info("🚀 [ADAPTIVE-{}] topic={} queue={}", 
+                    mode, topicKey, queueSize);
             }
             
         } catch (Exception e) {
@@ -773,7 +645,7 @@ public class IngestApplication {
         }
     }
 
-    // 🚀 消息队列处理线程 - 批量去重处理
+    // 🚀 消息队列处理线程 - 批量处理
     private static void processMessageQueue(RedisCommands<String,String> R, String topicKey, String queue,
                                            boolean dedupeEnable, int globalWindowMin, Map<String,Object> perTopic, boolean logAll) {
         BlockingQueue<MessageBuffer> messageQueue = messageQueues.get(topicKey);
@@ -791,7 +663,6 @@ public class IngestApplication {
                 // 尽量收集更多消息形成批次
                 messageQueue.drainTo(batch, batchSize - 1);
                 
-                // 🚫 旧的去重逻辑已被禁用，直接批量处理所有消息
                 processBatchNoDedupe(R, topicKey, queue, batch, logAll);
             }
         } catch (InterruptedException e) {
@@ -802,80 +673,7 @@ public class IngestApplication {
         }
     }
     
-    // 🚀 批量处理（带去重）
-    private static void processBatchWithDedupe(RedisCommands<String,String> R, String topicKey, String queue, 
-                                              List<MessageBuffer> batch, int globalWindowMin, Map<String,Object> perTopic, boolean logAll) {
-        if (batch.isEmpty()) return;
-        
-        long nowMs = System.currentTimeMillis();
-        Map<String,Object> topicConf = (Map<String,Object>) perTopic.getOrDefault(topicKey, Collections.emptyMap());
-        int windowMin = topicConf.containsKey("timeWindowMinutes") ?
-                ((Number)topicConf.get("timeWindowMinutes")).intValue() : globalWindowMin;
-        
-        // 批量检查去重状态
-        Map<String, String> dedupeKeys = new HashMap<>();
-        Set<String> deviceIds = new HashSet<>();
-        
-        for (MessageBuffer msg : batch) {
-            if (msg.deviceId != null && !msg.deviceId.isEmpty()) {
-                String dedupeKey = "dedupe:" + topicKey + ":" + msg.deviceId;
-                dedupeKeys.put(msg.deviceId, dedupeKey);
-                deviceIds.add(dedupeKey);
-            }
-        }
-        
-        // 批量获取去重状态
-        Map<String, String> lastAcceptTimes = new HashMap<>();
-        if (!deviceIds.isEmpty()) {
-            List<String> keysList = new ArrayList<>(deviceIds);
-            for (int i = 0; i < keysList.size(); i++) {
-                String key = keysList.get(i);
-                String value = R.get(key);  // 单独获取每个key
-                if (value != null) {
-                    lastAcceptTimes.put(key, value);
-                }
-            }
-        }
-        
-        // 处理每条消息
-        List<String> toEnqueue = new ArrayList<>();
-        Map<String, String> toUpdateDedupe = new HashMap<>();
-        
-        for (MessageBuffer msg : batch) {
-            if (msg.deviceId == null || msg.deviceId.isEmpty()) {
-                // 无deviceId直接入队
-                toEnqueue.add(msg.payload);
-                enqCounter.get(topicKey).incrementAndGet();
-                continue;
-            }
-            
-            String dedupeKey = dedupeKeys.get(msg.deviceId);
-            String lastAcceptMsStr = lastAcceptTimes.get(dedupeKey);
-            long lastAcceptMs = lastAcceptMsStr == null ? 0 : Long.parseLong(lastAcceptMsStr);
-            
-            boolean within = lastAcceptMs > 0 && (nowMs - lastAcceptMs) < windowMin * 60_000;
-            
-            if (within) {
-                dropCounter.get(topicKey).incrementAndGet();
-            } else {
-                toEnqueue.add(msg.payload);
-                toUpdateDedupe.put(dedupeKey, String.valueOf(nowMs));
-                enqCounter.get(topicKey).incrementAndGet();
-            }
-        }
-        
-        // 批量操作Redis
-        if (!toEnqueue.isEmpty()) {
-            R.lpush(queue, toEnqueue.toArray(new String[0]));
-            if (logAll) {
-                R.lpush("q:raw:" + topicKey, toEnqueue.toArray(new String[0]));
-            }
-        }
-        
-        if (!toUpdateDedupe.isEmpty()) {
-            R.mset(toUpdateDedupe);
-        }
-    }
+
     
     // 🚀 批量处理（无去重）
     private static void processBatchNoDedupe(RedisCommands<String,String> R, String topicKey, String queue, 
@@ -888,20 +686,16 @@ public class IngestApplication {
         if (logAll) {
             R.lpush("q:raw:" + topicKey, payloads.toArray(new String[0]));
         }
-        
-        enqCounter.get(topicKey).addAndGet(batch.size());
     }
     
     // 🚀 直接处理模式（正常模式使用）
     private static void handleMessageDirect(RedisCommands<String,String> R, String topicKey, String topic, String payloadStr, String deviceId,
                                            String queue, boolean dedupeEnable, int globalWindowMin, Map<String,Object> perTopic, boolean logAll) {
         
-        // 🚫 旧的去重逻辑已被禁用，直接入队
         R.lpush(queue, payloadStr);
         if (logAll) {
             R.lpush("q:raw:" + topicKey, payloadStr);
         }
-        enqCounter.get(topicKey).incrementAndGet();
     }
 
     interface MsgHandler { void handle(String topic, byte[] payload) throws Exception; }
