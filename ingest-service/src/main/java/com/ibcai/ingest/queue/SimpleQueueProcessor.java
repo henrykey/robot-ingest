@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 简单的队列处理器 - 步骤1用，只做入队和丢弃验证
+ * 简单的队列处理器 - 步骤2：启动Dispatcher进行分发处理
  */
 public class SimpleQueueProcessor {
     
@@ -23,13 +23,10 @@ public class SimpleQueueProcessor {
         return t;
     });
     
-    private static final AtomicLong totalProcessed = new AtomicLong(0);
-    private static final AtomicLong totalDropped = new AtomicLong(0);
-    
     private static volatile boolean started = false;
     
     /**
-     * 启动简单处理器
+     * 启动处理器 - 步骤2：启动Dispatcher
      */
     public static synchronized void start() {
         if (!IngestFeatureConfig.isFeatureEnabled()) {
@@ -43,48 +40,23 @@ public class SimpleQueueProcessor {
         
         started = true;
         
-        // 每100ms检查一次队列
-        scheduler.scheduleAtFixedRate(() -> {
-            try {
-                processQueue();
-            } catch (Exception e) {
-                log.error("❌ Error in queue processing: {}", e.getMessage());
-            }
-        }, 100, 100, TimeUnit.MILLISECONDS);
+        // 步骤2：启动Dispatcher代替原来的简单处理
+        Dispatcher.start();
         
-        // 每10秒输出统计
+        // 每10秒输出统计（包含Dispatcher和GlobalQueue状态）
         scheduler.scheduleAtFixedRate(() -> {
-            if (totalProcessed.get() > 0 || totalDropped.get() > 0) {
-                log.info("📊 SimpleQueueProcessor stats: processed={}, dropped={}, queueSize={}, globalStats={}", 
-                        totalProcessed.get(), totalDropped.get(), GlobalQueue.size(), GlobalQueue.getStats());
-            }
+            String globalStats = GlobalQueue.getStats();
+            String dispatcherStats = Dispatcher.getStats();
+            log.info("📊 Step2 stats: {} | {}", globalStats, dispatcherStats);
         }, 10, 10, TimeUnit.SECONDS);
         
-        log.info("🚀 SimpleQueueProcessor started");
-    }
-    
-    private static void processQueue() {
-        int batchSize = IngestFeatureConfig.getBatchSize();
-        List<Message> messages = GlobalQueue.drainTo(batchSize);
-        
-        if (!messages.isEmpty()) {
-            // 简单处理：只计数然后丢弃
-            totalProcessed.addAndGet(messages.size());
-            
-            // 为了验证，记录第一条消息的信息
-            if (totalProcessed.get() <= 5) {
-                Message first = messages.get(0);
-                log.info("🔍 Sample message: topic={}, payloadSize={}, timestamp={}", 
-                        first.getTopic(), first.getPayload().length, first.getTimestamp());
-            }
-        }
+        log.info("🚀 SimpleQueueProcessor started (Step 2: with Dispatcher)");
     }
     
     /**
-     * 获取处理统计
+     * 获取处理统计 - 步骤2：返回Dispatcher统计
      */
     public static String getStats() {
-        return String.format("SimpleQueueProcessor[processed=%d, dropped=%d]", 
-                           totalProcessed.get(), totalDropped.get());
+        return Dispatcher.getStats();
     }
 }

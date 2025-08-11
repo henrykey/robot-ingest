@@ -8,6 +8,7 @@ import com.ibcai.common.JsonCoreHasher;
 import com.ibcai.ingest.queue.GlobalQueue;
 import com.ibcai.ingest.queue.Message;
 import com.ibcai.ingest.queue.SimpleQueueProcessor;
+import com.ibcai.ingest.queue.Dispatcher;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
