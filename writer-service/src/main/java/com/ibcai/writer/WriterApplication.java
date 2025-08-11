@@ -29,6 +29,7 @@ public class WriterApplication {
         String mongoDb = Cfg.get(cfg, "mongodb.database", "robotdb");
         String stateEvents = Cfg.get(cfg, "mongodb.collections.stateEvents", "state_events");
 
+        // 旧的batch配置（保持兼容性）
         int sizeTrigger = Cfg.get(cfg, "batch.sizeTrigger", 1000);
         int timeTrigger = Cfg.get(cfg, "batch.timeTriggerSec", 60);
         int maxPerFlush = Cfg.get(cfg, "batch.maxPerFlush", 5000);
@@ -39,9 +40,24 @@ public class WriterApplication {
 
         MongoTemplate mongo = new MongoTemplate(new SimpleMongoClientDatabaseFactory(mongoUri + "/" + mongoDb));
 
+        // Step 6: 启动新的批量Writer（如果启用）
+        Map<String, Object> writerConfig = (Map<String, Object>) cfg.getOrDefault("writer", new HashMap<>());
+        boolean newWriterEnabled = Cfg.get(writerConfig, "enabled", false);
+        
+        BatchWriter batchWriter = null;
+        if (newWriterEnabled) {
+            batchWriter = new BatchWriter(R, mongo, cfg);
+            batchWriter.start();
+            System.out.println("🚀 Step 6: BatchWriter started for ingest:* queues");
+        }
+
+        System.out.println("🚀 Writer service started - Legacy writer for q:state queue");
+        
         long lastFlush = System.currentTimeMillis();
+        long lastStats = System.currentTimeMillis();
 
         while (true) {
+            // 旧的Writer逻辑（处理 q:state 队列，保持兼容性）
             long qlen = R.llen("q:state");
             if (qlen >= sizeTrigger || (System.currentTimeMillis() - lastFlush) / 1000 >= timeTrigger) {
                 int toPop = (int)Math.min(qlen, maxPerFlush);
@@ -58,14 +74,22 @@ public class WriterApplication {
                         Map<String,Object> doc = new HashMap<>();
                         doc.put("raw", json);
                         doc.put("ingestedAt", new Date());
+                        doc.put("source", "legacy-writer");  // 标识来源
                         ops.insert(doc);
                     }
                     ops.execute();
                     long ms = Duration.between(t0, Instant.now()).toMillis();
-                    System.out.println("Flushed " + batch.size() + " state events in " + ms + " ms");
+                    System.out.println("Legacy Writer: Flushed " + batch.size() + " state events in " + ms + " ms");
                 }
                 lastFlush = System.currentTimeMillis();
             }
+            
+            // 每30秒输出统计信息
+            if (batchWriter != null && (System.currentTimeMillis() - lastStats) >= 30000) {
+                System.out.println("📊 Writer Stats: " + batchWriter.getStats());
+                lastStats = System.currentTimeMillis();
+            }
+            
             Thread.sleep(50);
         }
     }

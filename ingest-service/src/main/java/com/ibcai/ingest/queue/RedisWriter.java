@@ -67,11 +67,14 @@ public class RedisWriter {
                 writeSuccessCount.incrementAndGet();
                 
                 if (attempt > 0) {
-                    log.debug("✅ RedisWriter succeeded on retry {}: key={}, payloadSize={}", 
+                    log.info("✅ RedisWriter succeeded on retry {}: key={}, payloadSize={}", 
                              attempt, redisKey, payload.length());
                 } else {
-                    log.debug("✅ RedisWriter immediate success: key={}, payloadSize={}", 
-                             redisKey, payload.length());
+                    // 前几条消息用info日志显示
+                    if (writeSuccessCount.get() <= 5) {
+                        log.info("✅ RedisWriter immediate success: key={}, payloadSize={}", 
+                                 redisKey, payload.length());
+                    }
                 }
                 
                 return true;
@@ -81,7 +84,7 @@ public class RedisWriter {
                 
                 if (attempt <= retryAttempts) {
                     retryCount.incrementAndGet();
-                    log.debug("⚠️ RedisWriter retry {}/{} for key={}: {}", 
+                    log.info("⚠️ RedisWriter retry {}/{} for key={}: {}", 
                              attempt, retryAttempts, redisKey, e.getMessage());
                     
                     // 轻量重试延迟

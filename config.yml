@@ -103,6 +103,25 @@ batch:
   backpressure:
     sleepMsOnBusy: 50
 
+# Step 6: Writer 批量落库配置
+writer:
+  enabled: true                         # 启用新的批量Writer
+  batchSize: 100                        # 批量大小触发
+  batchIntervalMs: 120000               # 批量时间触发（2分钟）
+  maxPerFlush: 500                      # 每次最大处理数量
+  topics:                               # 支持的主题列表
+    - "state"
+    - "connection"
+    - "networkIp"
+    - "error"
+    - "cargo"
+  collections:                          # 主题到MongoDB集合的映射
+    state: "state_events"
+    connection: "connection_events"
+    networkIp: "network_ip_events"
+    error: "error_events"
+    cargo: "cargo_events"
+
 http:
   port: 8080
   managementPort: 8081
