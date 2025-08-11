@@ -98,6 +98,13 @@ public class GlobalQueue {
     }
     
     /**
+     * 获取丢弃总数
+     */
+    public static long getDroppedCount() {
+        return totalDropped.get();
+    }
+    
+    /**
      * 重置计数器（测试用）
      */
     public static void resetCounters() {

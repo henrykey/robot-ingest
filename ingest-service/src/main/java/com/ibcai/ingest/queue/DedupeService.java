@@ -174,6 +174,13 @@ public class DedupeService {
     }
     
     /**
+     * 获取去重丢弃计数
+     */
+    public static long getDuplicatedCount() {
+        return totalDuplicated.get();
+    }
+    
+    /**
      * 重置计数器（测试用）
      */
     public static void resetCounters() {

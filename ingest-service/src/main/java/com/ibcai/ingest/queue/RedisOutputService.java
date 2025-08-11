@@ -100,6 +100,13 @@ public class RedisOutputService {
     }
     
     /**
+     * 获取Redis输出丢弃计数
+     */
+    public static long getDroppedCount() {
+        return totalDropped.get();
+    }
+    
+    /**
      * 重置计数器（测试用）
      */
     public static void resetCounters() {

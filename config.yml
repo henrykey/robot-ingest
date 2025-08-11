@@ -113,6 +113,9 @@ ingest:
   batch:
     size: 100                          # 批量处理大小
     intervalMs: 100                    # 批量处理间隔
+  stats:
+    throughputWindowSec: 30            # 吞吐量计算时间窗口（秒），设置为30秒
+    outputIntervalSec: 30              # 统计输出间隔（秒），设置为30秒
 
 logging:
   level: "INFO"

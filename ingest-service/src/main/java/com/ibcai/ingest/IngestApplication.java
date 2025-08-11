@@ -10,6 +10,9 @@ import com.ibcai.ingest.queue.Message;
 import com.ibcai.ingest.queue.SimpleQueueProcessor;
 import com.ibcai.ingest.queue.Dispatcher;
 import com.ibcai.ingest.queue.Step3ConfigManager;
+import com.ibcai.ingest.queue.DedupeService;
+import com.ibcai.ingest.queue.RedisOutputService;
+import com.ibcai.ingest.config.IngestFeatureConfig;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
@@ -54,11 +57,15 @@ public class IngestApplication {
     
     // 🚀 步骤1&2：全局统计变量（总数+吞吐量）
     private static final AtomicLong globalTotalMessages = new AtomicLong(0);
-    private static final AtomicLong globalMessagesIn60s = new AtomicLong(0);
+    private static final AtomicLong globalMessagesInWindow = new AtomicLong(0);
     private static volatile long lastGlobalStatTime = System.currentTimeMillis();
     private static volatile long throughputStartTime = System.currentTimeMillis();
     private static volatile long lastGlobalTotalMessages = 0; // 用于判断globalTotalMessages是否增加
     private static final List<Long> recentMessageTimes = Collections.synchronizedList(new ArrayList<>());
+    
+    // 可配置的统计时间窗口（毫秒）
+    private static int statsThroughputWindowMs = IngestFeatureConfig.getStatsThroughputWindowSec() * 1000;
+    private static int statsOutputIntervalMs = IngestFeatureConfig.getStatsOutputIntervalSec() * 1000;
     
     // 🚀 步骤3：动态日志模式（附加防抖动机制）
     private static volatile String currentLogMode = "LOW";
@@ -296,7 +303,7 @@ public class IngestApplication {
         
         // 1. 累积全局接收数量统计
         long totalMsgs = globalTotalMessages.incrementAndGet();
-        long msgsIn60s = globalMessagesIn60s.incrementAndGet();
+        long msgsInWindow = globalMessagesInWindow.incrementAndGet();
         
         // 2. 瞬时吞吐量统计（基于最近2秒）
         synchronized (recentMessageTimes) {
@@ -305,22 +312,29 @@ public class IngestApplication {
             recentMessageTimes.removeIf(time -> currentTime - time > 2000);
         }
         
-        // 3. 每10秒输出统计（仅当globalTotalMessages增加时）
+        // 3. 每配置间隔输出统计（仅当globalTotalMessages增加时）
         long timeSinceLastStat = currentTime - lastGlobalStatTime;
         long currentGlobalTotal = globalTotalMessages.get();
-        if (timeSinceLastStat >= 10000 && currentGlobalTotal > lastGlobalTotalMessages) {
+        if (timeSinceLastStat >= statsOutputIntervalMs && currentGlobalTotal > lastGlobalTotalMessages) {
             long timeSinceStart = currentTime - throughputStartTime;
-            double avgThroughputPerSec = msgsIn60s / (timeSinceLastStat / 1000.0);
+            double avgThroughputPerSec = msgsInWindow / (timeSinceLastStat / 1000.0);
             double totalAvgThroughput = (totalMsgs * 1000.0) / timeSinceStart;
             
             lastGlobalStatTime = currentTime;
             lastGlobalTotalMessages = currentGlobalTotal; // 更新上次记录的总数
             
-            log.info("📊 [GLOBAL-STATS] Total: {} msgs, CurrentPeriod: {} msgs, Throughput: {} msg/s (current), {} msg/s (total avg)", 
-                totalMsgs, msgsIn60s, String.format("%.1f", avgThroughputPerSec), String.format("%.1f", totalAvgThroughput));
+            // 获取所有类型的drop计数
+            long queueDropped = GlobalQueue.getDroppedCount();       // 队列满时丢弃
+            long redisDropped = RedisOutputService.getDroppedCount(); // Redis输出失败丢弃
+            long dedupeDropped = DedupeService.getDuplicatedCount();  // 去重丢弃
+            long totalDropped = queueDropped + redisDropped + dedupeDropped;
+            long effectiveCount = totalMsgs - totalDropped;
+            
+            log.info("📊 [GLOBAL-STATS] Total: {} msgs, Dropped: {} msgs (Queue: {}, Redis: {}, Dedupe: {}), Effective: {} msgs, CurrentPeriod: {} msgs, Throughput: {} msg/s (current), {} msg/s (total avg)", 
+                totalMsgs, totalDropped, queueDropped, redisDropped, dedupeDropped, effectiveCount, msgsInWindow, String.format("%.1f", avgThroughputPerSec), String.format("%.1f", totalAvgThroughput));
             
             // 重置当前周期计数，为下一个统计周期准备
-            globalMessagesIn60s.set(0);
+            globalMessagesInWindow.set(0);
         }
     }
     
@@ -613,7 +627,7 @@ public class IngestApplication {
                 // 如果吞吐量回落到很低的区域（比如 < 100 msg/s），重置计数器
                 if (instantThroughput < 100) {
                     long totalBeforeReset = globalTotalMessages.get();
-                    globalMessagesIn60s.set(0);
+                    globalMessagesInWindow.set(0);
                     throughputStartTime = System.currentTimeMillis();
                     lastGlobalStatTime = System.currentTimeMillis();
                     log.info("🔄 [COUNTER-RESET] Low throughput detected ({}msg/s), counters reset. Total before reset: {}", 

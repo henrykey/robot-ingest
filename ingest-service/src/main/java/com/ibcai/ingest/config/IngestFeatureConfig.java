@@ -16,12 +16,18 @@ public class IngestFeatureConfig {
     public static final String INGEST_BATCH_SIZE = "INGEST_BATCH_SIZE";
     public static final String INGEST_BATCH_INTERVAL_MS = "INGEST_BATCH_INTERVAL_MS";
     
+    // 统计配置
+    public static final String INGEST_STATS_THROUGHPUT_WINDOW_SEC = "INGEST_STATS_THROUGHPUT_WINDOW_SEC";
+    public static final String INGEST_STATS_OUTPUT_INTERVAL_SEC = "INGEST_STATS_OUTPUT_INTERVAL_SEC";
+    
     // 默认值
     public static final boolean DEFAULT_FEATURE_ENABLED = false;
     public static final int DEFAULT_QUEUE_CAPACITY = 10240;
     public static final boolean DEFAULT_DROP_WHEN_FULL = true;
     public static final int DEFAULT_BATCH_SIZE = 100;
     public static final int DEFAULT_BATCH_INTERVAL_MS = 100;
+    public static final int DEFAULT_STATS_THROUGHPUT_WINDOW_SEC = 60;
+    public static final int DEFAULT_STATS_OUTPUT_INTERVAL_SEC = 60;
     
     /**
      * 获取环境变量或默认值
@@ -49,5 +55,15 @@ public class IngestFeatureConfig {
     public static int getBatchIntervalMs() {
         String env = System.getenv(INGEST_BATCH_INTERVAL_MS);
         return env != null ? Integer.parseInt(env) : DEFAULT_BATCH_INTERVAL_MS;
+    }
+    
+    public static int getStatsThroughputWindowSec() {
+        String env = System.getenv(INGEST_STATS_THROUGHPUT_WINDOW_SEC);
+        return env != null ? Integer.parseInt(env) : DEFAULT_STATS_THROUGHPUT_WINDOW_SEC;
+    }
+    
+    public static int getStatsOutputIntervalSec() {
+        String env = System.getenv(INGEST_STATS_OUTPUT_INTERVAL_SEC);
+        return env != null ? Integer.parseInt(env) : DEFAULT_STATS_OUTPUT_INTERVAL_SEC;
     }
 }
