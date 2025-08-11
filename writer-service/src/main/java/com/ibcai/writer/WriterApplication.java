@@ -4,6 +4,8 @@ import com.ibcai.common.Cfg;
 import com.ibcai.common.ConfigLoader;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.data.mongodb.core.BulkOperations;
@@ -16,6 +18,8 @@ import java.util.*;
 
 @SpringBootApplication
 public class WriterApplication {
+
+    private static final Logger log = LoggerFactory.getLogger(WriterApplication.class);
 
     public static void main(String[] args) throws Exception {
         SpringApplication.run(WriterApplication.class, args);
@@ -48,10 +52,10 @@ public class WriterApplication {
         if (newWriterEnabled) {
             batchWriter = new BatchWriter(R, mongo, cfg);
             batchWriter.start();
-            System.out.println("🚀 Step 6: BatchWriter started for ingest:* queues");
+            log.info("🚀 Step 6: BatchWriter started for ingest:* queues");
         }
 
-        System.out.println("🚀 Writer service started - Legacy writer for q:state queue");
+        log.info("🚀 Writer service started - Legacy writer for q:state queue");
         
         long lastFlush = System.currentTimeMillis();
         long lastStats = System.currentTimeMillis();
@@ -79,14 +83,14 @@ public class WriterApplication {
                     }
                     ops.execute();
                     long ms = Duration.between(t0, Instant.now()).toMillis();
-                    System.out.println("Legacy Writer: Flushed " + batch.size() + " state events in " + ms + " ms");
+                    log.info("📊 Legacy Writer: Flushed {} state events in {} ms", batch.size(), ms);
                 }
                 lastFlush = System.currentTimeMillis();
             }
             
-            // 每30秒输出统计信息
-            if (batchWriter != null && (System.currentTimeMillis() - lastStats) >= 30000) {
-                System.out.println("📊 Writer Stats: " + batchWriter.getStats());
+            // 每5分钟输出统计信息（减少日志频率）
+            if (batchWriter != null && (System.currentTimeMillis() - lastStats) >= 300000) {
+                log.info("📊 Writer Stats: {}", batchWriter.getStats());
                 lastStats = System.currentTimeMillis();
             }
             

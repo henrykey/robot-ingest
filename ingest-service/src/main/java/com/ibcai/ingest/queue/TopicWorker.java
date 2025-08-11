@@ -156,11 +156,11 @@ public class TopicWorker {
                     uniqueCount.incrementAndGet();
                     redisSuccessCount.incrementAndGet();
                     
-                    // 显示前几条唯一消息的详细信息
-                    if (uniqueCount.get() <= 3) {
-                        log.info("✅ TopicWorker[{}] processed unique message: deviceId={}, reason={}, queuedTo={}", 
-                                groupKey, message.getDeviceId(), dedupeResult.reason, targetQueueName);
-                    }
+                    // 使用全局的基于吞吐量的日志策略
+                    com.ibcai.ingest.IngestApplication.outputMessageOptimized("PROCESSED", 
+                        originalTopic, groupKey, message.toString(), 
+                        String.format("deviceId=%s, reason=%s, queuedTo=%s", 
+                            message.getDeviceId(), dedupeResult.reason, targetQueueName));
                 } else {
                     redisFailureCount.incrementAndGet();
                     log.warn("❌ TopicWorker[{}] failed to queue message to Redis: deviceId={}", 
@@ -170,11 +170,11 @@ public class TopicWorker {
                 // 重复消息，仅计数
                 duplicateCount.incrementAndGet();
                 
-                // 显示前几条重复消息的信息
-                if (duplicateCount.get() <= 3) {
-                    log.info("🔄 TopicWorker[{}] dropped duplicate message: deviceId={}, reason={}", 
-                            groupKey, message.getDeviceId(), dedupeResult.reason);
-                }
+                // 使用全局的基于吞吐量的日志策略
+                com.ibcai.ingest.IngestApplication.outputMessageOptimized("DUPLICATE", 
+                    originalTopic, groupKey, message.toString(), 
+                    String.format("deviceId=%s, reason=%s", 
+                        message.getDeviceId(), dedupeResult.reason));
             }
             
         } catch (Exception e) {

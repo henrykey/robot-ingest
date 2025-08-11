@@ -553,6 +553,9 @@ public class IngestApplication {
             sampler = normalSampler;
         } else if ("HIGH-FREQ".equals(action)) {
             sampler = highFreqSampler;
+        } else if ("PROCESSED".equals(action) || "DUPLICATE".equals(action)) {
+            // TopicWorker的日志使用 normalSampler
+            sampler = normalSampler;
         }
         
         // 高频模式下使用采样控制，低频模式正常输出
@@ -563,7 +566,7 @@ public class IngestApplication {
         switch (logMode) {
             case "LOW": // 低频：详细日志
                 String preview = payload.length() > 50 ? payload.substring(0, 50) + "..." : payload;
-                log.info("� [{}] topic={} preview=[{}] details={}", action, topic, preview, details);
+                log.info("✅ [{}] topic={} preview=[{}] details={}", action, topic, preview, details);
                 break;
                 
             case "MID": // 中频：精简日志（已通过采样控制）
@@ -583,6 +586,12 @@ public class IngestApplication {
                 }
                 break;
         }
+    }
+
+    // 🚀 公共的基于吞吐量的日志输出方法（供其他类调用）
+    public static void outputMessageOptimized(String action, String topic, String topicKey, String payload, String details) {
+        String logMode = currentLogMode;  // 获取当前全局日志模式
+        outputMessage(logMode, action, topic, topicKey, payload, details);
     }
 
     // 🚀 自适应消息处理器 - 动态模式切换
