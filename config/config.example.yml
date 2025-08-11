@@ -103,6 +103,17 @@ http:
       - "metrics"
       - "prometheus"
 
+# 新增：侧挂处理特性配置（默认关闭）
+ingest:
+  feature:
+    enabled: false                      # 总开关，默认关闭
+  queue:
+    capacity: 10240                     # 全局队列容量
+    dropWhenFull: true                  # 队满时丢弃策略
+  batch:
+    size: 100                          # 批量处理大小
+    intervalMs: 100                    # 批量处理间隔
+
 logging:
   level: "INFO"
   redact:

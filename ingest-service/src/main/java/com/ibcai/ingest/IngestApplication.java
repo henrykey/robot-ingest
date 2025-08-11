@@ -5,6 +5,9 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import com.ibcai.common.Cfg;
 import com.ibcai.common.ConfigLoader;
 import com.ibcai.common.JsonCoreHasher;
+import com.ibcai.ingest.queue.GlobalQueue;
+import com.ibcai.ingest.queue.Message;
+import com.ibcai.ingest.queue.SimpleQueueProcessor;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
@@ -177,6 +180,9 @@ public class IngestApplication {
                 
                 @Override
                 public void messageArrived(String topic, MqttMessage message) throws Exception {
+                    // 🚀 全局入队 Tap（步骤1）- 零处理镜像式侧挂，不影响原链路
+                    GlobalQueue.offer(new Message(topic, message.getPayload(), System.currentTimeMillis()));
+                    
                     // 🚀 异步处理消息以提高吞吐量 (参考测试客户端优化)
                     messageProcessor.submit(() -> {
                         try {
@@ -229,6 +235,9 @@ public class IngestApplication {
             log.info("🚀 All topics subscribed - {} MQTT processing ACTIVE", mode);
             log.info("🚀 HIGH-FREQUENCY MQTT INGEST ACTIVE - Connected to MQTT {} and Redis {}:{}", 
                     broker, redisHost, redisPort);
+            
+            // 🚀 启动步骤1的简单队列处理器
+            SimpleQueueProcessor.start();
             
         } catch (Exception e) {
             log.error("❌ Failed to initialize MQTT client: {}", e.getMessage());

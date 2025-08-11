@@ -7,16 +7,14 @@ mqtt:
   brokerUrl: "tcp://192.168.123.61:1883"
   clientIdPrefix: "ingest-"
   cleanSession: true
-  connectionTimeoutSec: 30    # 🚀 优化：增加连接超时
-  keepAliveSec: 60           # 🚀 优化：增加心跳间隔，减少网络开销
-  maxInflight: 10000         # 🚀 优化：参考测试客户端，使用10000而非65535
-  # 强制高频场景使用QoS=1确保至少传递一次
+  connectionTimeoutSec: 10
+  keepAliveSec: 30
   qos:
-    state: 1        # 🚀 优化：state主题改为QoS=1，确保高频消息不丢失
+    state: 0
     connection: 1
     networkIp: 1
     error: 1
-    cargo: 1        # 🚀 优化：cargo主题也改为QoS=1
+    cargo: 0
   topics:
     state: "robots/+/state"
     connection: "robots/+/connection"
@@ -73,7 +71,7 @@ mongodb:
     wtimeoutMs: 0
 
 dedupe:
-  enable: true  # 🚀 启用去重功能
+  enable: true
   positionQuantize:
     decimals: 6
   coreFields:
@@ -87,52 +85,6 @@ dedupe:
     - "position"
   hashAlgo: "murmur3"
   dropCounterField: "state_dropped"
-  perTopic:
-    state:
-      coreFields: ["battery","taskStatus","taskId","autonomousMode","fault","binsNum","coordinateType","position"]
-      positionQuantize: { decimals: 6 }
-      timeWindowMinutes: 10
-    connection:
-      coreFields: []
-      timeWindowMinutes: 10
-    networkIp:
-      coreFields: ["ip"]
-      timeWindowMinutes: 10
-    error:
-      coreFields: ["code","msg"]
-      timeWindowMinutes: 1
-    cargo:
-      coreFields: ["bins","door"]
-      timeWindowMinutes: 10
-
-logging:
-  logAll: false
-
-# 🚀 自适应高频处理配置
-adaptive:
-  enable: true
-  # 消息大小限制
-  maxMessageSizeKB: 16
-  # 吞吐量阈值 (messages/second)
-  thresholds:
-    normalToHighFreq: 1000    # 超过1000 msg/s进入高频模式
-    highFreqToNormal: 500     # 低于500 msg/s退出高频模式
-  # 统计窗口时间
-  statisticsWindow:
-    entranceIntervalSec: 2    # 入口统计间隔
-    exitIntervalSec: 5        # 出口统计间隔
-  # 消息队列配置
-  messageQueue:
-    maxSize: 5000             # 内存队列最大容量
-    batchSize: 100            # 批处理大小
-    timeoutMs: 100            # 批处理超时时间
-    bufferSizeKB: 16          # 单个消息缓冲区大小
-  # 高频模式配置
-  highFreqMode:
-    enableSimplifiedLogging: true    # 启用简化日志
-    dedupeStrategy: "batch"          # 批量去重策略
-    skipDetailedStats: true          # 跳过详细统计
-    logIntervalSec: 10               # 日志输出间隔
 
 batch:
   sizeTrigger: 1000
@@ -151,9 +103,18 @@ http:
       - "metrics"
       - "prometheus"
 
+# 新增：侧挂处理特性配置（步骤1测试：启用）
+ingest:
+  feature:
+    enabled: true                       # 总开关，启用进行测试
+  queue:
+    capacity: 10240                     # 全局队列容量
+    dropWhenFull: true                  # 队满时丢弃策略
+  batch:
+    size: 100                          # 批量处理大小
+    intervalMs: 100                    # 批量处理间隔
+
 logging:
-  level: "DEBUG"
-  level.com.ibcai.ingest: "DEBUG"
-  level.com.ibcai.writer: "DEBUG"
+  level: "INFO"
   redact:
     secrets: true
