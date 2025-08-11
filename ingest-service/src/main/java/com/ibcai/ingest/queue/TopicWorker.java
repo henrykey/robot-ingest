@@ -1,14 +1,16 @@
 package com.ibcai.ingest.queue;
 
+import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 主题工作线程 - 步骤2：处理特定topic+objectKey的消息队列
+ * 主题工作线程 - 步骤3：处理特定topic+objectKey的消息队列，集成去重与Redis输出
  */
 public class TopicWorker {
     
@@ -19,18 +21,33 @@ public class TopicWorker {
     private final Thread workerThread;
     private volatile boolean running = false;
     
+    // 步骤3：去重与Redis输出服务
+    private final DedupeService dedupeService;
+    private final RedisOutputService redisOutputService;
+    private final String targetQueueName;
+    
     // 统计
     private final AtomicLong processedCount = new AtomicLong(0);
     private final AtomicLong droppedCount = new AtomicLong(0);
+    private final AtomicLong uniqueCount = new AtomicLong(0);
+    private final AtomicLong duplicateCount = new AtomicLong(0);
+    private final AtomicLong redisSuccessCount = new AtomicLong(0);
+    private final AtomicLong redisFailureCount = new AtomicLong(0);
     
     // 队列容量限制
     private static final int QUEUE_CAPACITY = 1000;
     
-    public TopicWorker(String groupKey) {
+    public TopicWorker(String groupKey, RedisCommands<String, String> redis, 
+                      Map<String, Object> dedupeConfig, int globalWindowMin, String targetQueueName) {
         this.groupKey = groupKey;
         this.inputQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
         this.workerThread = new Thread(this::processMessages, "ingest-topic-" + groupKey);
         this.workerThread.setDaemon(true);
+        
+        // 步骤3：初始化去重与Redis输出服务
+        this.dedupeService = new DedupeService(redis, dedupeConfig, globalWindowMin);
+        this.redisOutputService = new RedisOutputService(redis);
+        this.targetQueueName = targetQueueName;
     }
     
     /**
@@ -97,19 +114,54 @@ public class TopicWorker {
     }
     
     /**
-     * 处理单条消息（步骤2暂时只丢弃）
+     * 处理单条消息 - 步骤3：集成去重与Redis输出
      */
     private void processMessage(Message message) {
-        // 步骤2：暂时只做计数，不做实际处理
-        // 后续步骤会在这里添加去重、lastone发布、Redis写入等逻辑
+        try {
+            // 步骤3：去重处理
+            DedupeService.DedupeResult dedupeResult = dedupeService.processMessage(message);
+            
+            if (dedupeResult.shouldKeep) {
+                // 唯一消息，输出到Redis队列
+                boolean redisSuccess = redisOutputService.outputToQueue(message, targetQueueName);
+                
+                if (redisSuccess) {
+                    uniqueCount.incrementAndGet();
+                    redisSuccessCount.incrementAndGet();
+                    
+                    // 显示前几条唯一消息的详细信息
+                    if (uniqueCount.get() <= 3) {
+                        log.info("✅ TopicWorker[{}] processed unique message: deviceId={}, reason={}, queuedTo={}", 
+                                groupKey, message.getDeviceId(), dedupeResult.reason, targetQueueName);
+                    }
+                } else {
+                    redisFailureCount.incrementAndGet();
+                    log.warn("❌ TopicWorker[{}] failed to queue message to Redis: deviceId={}", 
+                            groupKey, message.getDeviceId());
+                }
+            } else {
+                // 重复消息，仅计数
+                duplicateCount.incrementAndGet();
+                
+                // 显示前几条重复消息的信息
+                if (duplicateCount.get() <= 3) {
+                    log.info("🔄 TopicWorker[{}] dropped duplicate message: deviceId={}, reason={}", 
+                            groupKey, message.getDeviceId(), dedupeResult.reason);
+                }
+            }
+            
+        } catch (Exception e) {
+            log.error("❌ Error processing message in TopicWorker[{}]: {}", groupKey, e.getMessage());
+        }
     }
     
     /**
-     * 获取统计信息
+     * 获取统计信息 - 步骤3：包含去重与Redis输出统计
      */
     public String getStats() {
-        return String.format("TopicWorker[%s: processed=%d, dropped=%d, queueSize=%d]", 
-                           groupKey, processedCount.get(), droppedCount.get(), inputQueue.size());
+        return String.format("TopicWorker[%s: processed=%d, unique=%d, duplicate=%d, redisOK=%d, redisFail=%d, queueSize=%d]", 
+                           groupKey, processedCount.get(), uniqueCount.get(), duplicateCount.get(),
+                           redisSuccessCount.get(), redisFailureCount.get(), inputQueue.size());
     }
     
     /**

@@ -9,6 +9,7 @@ import com.ibcai.ingest.queue.GlobalQueue;
 import com.ibcai.ingest.queue.Message;
 import com.ibcai.ingest.queue.SimpleQueueProcessor;
 import com.ibcai.ingest.queue.Dispatcher;
+import com.ibcai.ingest.queue.Step3ConfigManager;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
@@ -236,6 +237,9 @@ public class IngestApplication {
             log.info("🚀 All topics subscribed - {} MQTT processing ACTIVE", mode);
             log.info("🚀 HIGH-FREQUENCY MQTT INGEST ACTIVE - Connected to MQTT {} and Redis {}:{}", 
                     broker, redisHost, redisPort);
+            
+            // 🚀 步骤3：初始化侧挂架构配置管理器
+            Step3ConfigManager.initialize(cfg);
             
             // 🚀 启动步骤1的简单队列处理器
             SimpleQueueProcessor.start();

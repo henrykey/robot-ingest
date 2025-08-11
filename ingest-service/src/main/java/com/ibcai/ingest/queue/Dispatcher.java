@@ -1,6 +1,7 @@
 package com.ibcai.ingest.queue;
 
 import com.ibcai.ingest.config.IngestFeatureConfig;
+import io.lettuce.core.api.sync.RedisCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,7 +16,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 分发器 - 步骤2：从GlobalQueue取出消息，按topic+objectKey分组分发到TopicWorker
+ * 分发器 - 步骤3：从GlobalQueue取出消息，按topic+objectKey分组分发到TopicWorker（集成去重与Redis输出）
  */
 public class Dispatcher {
     
@@ -144,12 +145,27 @@ public class Dispatcher {
     }
     
     /**
-     * 获取或创建TopicWorker
+     * 获取或创建TopicWorker - 步骤3：传递去重和Redis配置
      */
     private static synchronized TopicWorker getOrCreateTopicWorker(String groupKey) {
         TopicWorker worker = topicWorkers.get(groupKey);
         if (worker == null) {
-            worker = new TopicWorker(groupKey);
+            // 步骤3：检查配置管理器是否已初始化
+            if (!Step3ConfigManager.isInitialized()) {
+                log.warn("⚠️ Step3ConfigManager not initialized, creating worker without Redis/Dedupe");
+                worker = new TopicWorker(groupKey, null, null, 5, "q:unknown");
+            } else {
+                // 从groupKey提取topicKey
+                String topicKey = groupKey.split(":")[0];
+                
+                RedisCommands<String, String> redis = Step3ConfigManager.getRedisCommands();
+                Map<String, Object> dedupeConfig = Step3ConfigManager.getDedupeConfig();
+                int globalWindowMin = Step3ConfigManager.getGlobalWindowMin();
+                String targetQueue = Step3ConfigManager.getTargetQueue(topicKey);
+                
+                worker = new TopicWorker(groupKey, redis, dedupeConfig, globalWindowMin, targetQueue);
+            }
+            
             worker.start();
             topicWorkers.put(groupKey, worker);
             log.info("🔧 Created new TopicWorker for group: {}", groupKey);
