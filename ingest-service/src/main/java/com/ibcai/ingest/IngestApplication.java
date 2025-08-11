@@ -628,7 +628,14 @@ public class IngestApplication {
             
             if (isHighFreqMode.get()) {
                 // 🚀 高频模式：放入队列缓冲
-                BlockingQueue<MessageBuffer> queue_buffer = messageQueues.get(topicKey);
+                BlockingQueue<MessageBuffer> queue_buffer = messageQueues.computeIfAbsent(topicKey, 
+                    k -> {
+                        log.info("🔧 [ADAPTIVE] Creating new queue for topic: {}", k);
+                        BlockingQueue<MessageBuffer> newQueue = new LinkedBlockingQueue<>(queueMaxSize);
+                        // 启动新的消息处理线程
+                        scheduler.submit(() -> processMessageQueue(R, k, queue, dedupeEnable, globalWindowMin, perTopic, logAll));
+                        return newQueue;
+                    });
                 MessageBuffer msgBuffer = new MessageBuffer(topic, payloadStr, deviceId);
                 
                 if (!queue_buffer.offer(msgBuffer)) {
