@@ -148,11 +148,10 @@ public class IngestApplication {
             "cargo",      Cfg.get(cfg, "mqtt.qos.cargo", 1)       // 🚀 默认QoS=1
         );
 
-        // dedupe 配置
-        Map<String, Object> dedupe = (Map<String, Object>) cfg.getOrDefault("dedupe", Collections.emptyMap());
-        boolean dedupeEnable = Boolean.TRUE.equals(dedupe.getOrDefault("enable", false));
-        int globalWindowMin = ((Number)dedupe.getOrDefault("timeWindowMinutes", 10)).intValue();
-        Map<String, Object> perTopic = (Map<String, Object>) dedupe.getOrDefault("perTopic", Collections.emptyMap());
+        // 🚫 原有去重功能已移除，由新的侧挂去重功能替代
+        boolean dedupeEnable = false;  // 强制禁用旧去重功能
+        int globalWindowMin = 10;      // 保留参数避免编译错误
+        Map<String, Object> perTopic = Collections.emptyMap();  // 保留参数避免编译错误
 
         // logAll 配置
         Map<String, Object> logging = (Map<String, Object>) cfg.getOrDefault("logging", Collections.emptyMap());
@@ -594,7 +593,15 @@ public class IngestApplication {
                 return;
             }
 
-            // 🚀 简化去重：只使用基于时间的去重，不计算复杂hash
+            // � 旧的去重逻辑已禁用，所有消息直接入队
+            if (!dedupeEnable) {
+                // 去重禁用，直接入队
+                R.lpush(queue, payloadStr);
+                enqCounter.get(topicKey).incrementAndGet();
+                return;
+            }
+
+            // �🚀 简化去重：只使用基于时间的去重，不计算复杂hash
             String lastTsKey = "dedupe:" + topicKey + ":" + deviceId;
             long nowMs = System.currentTimeMillis();
             
@@ -784,11 +791,8 @@ public class IngestApplication {
                 // 尽量收集更多消息形成批次
                 messageQueue.drainTo(batch, batchSize - 1);
                 
-                if (dedupeEnable) {
-                    processBatchWithDedupe(R, topicKey, queue, batch, globalWindowMin, perTopic, logAll);
-                } else {
-                    processBatchNoDedupe(R, topicKey, queue, batch, logAll);
-                }
+                // 🚫 旧的去重逻辑已被禁用，直接批量处理所有消息
+                processBatchNoDedupe(R, topicKey, queue, batch, logAll);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -892,45 +896,11 @@ public class IngestApplication {
     private static void handleMessageDirect(RedisCommands<String,String> R, String topicKey, String topic, String payloadStr, String deviceId,
                                            String queue, boolean dedupeEnable, int globalWindowMin, Map<String,Object> perTopic, boolean logAll) {
         
-        if (!dedupeEnable) {
-            R.lpush(queue, payloadStr);
-            if (logAll) {
-                R.lpush("q:raw:" + topicKey, payloadStr);
-            }
-            enqCounter.get(topicKey).incrementAndGet();
-            return;
-        }
-        
-        if (deviceId == null || deviceId.isEmpty()) {
-            R.lpush(queue, payloadStr);
-            enqCounter.get(topicKey).incrementAndGet();
-            return;
-        }
-
-        // 去重逻辑
-        String lastTsKey = "dedupe:" + topicKey + ":" + deviceId;
-        long nowMs = System.currentTimeMillis();
-        
-        Map<String,Object> topicConf = (Map<String,Object>) perTopic.getOrDefault(topicKey, Collections.emptyMap());
-        int windowMin = topicConf.containsKey("timeWindowMinutes") ?
-                ((Number)topicConf.get("timeWindowMinutes")).intValue() : globalWindowMin;
-        
-        String lastAcceptMsStr = R.get(lastTsKey);
-        long lastAcceptMs = lastAcceptMsStr == null ? 0 : Long.parseLong(lastAcceptMsStr);
-        
-        boolean within = lastAcceptMs > 0 && (nowMs - lastAcceptMs) < windowMin * 60_000;
-        
-        if (within) {
-            dropCounter.get(topicKey).incrementAndGet();
-            return;
-        }
-
-        R.set(lastTsKey, String.valueOf(nowMs));
+        // 🚫 旧的去重逻辑已被禁用，直接入队
         R.lpush(queue, payloadStr);
         if (logAll) {
             R.lpush("q:raw:" + topicKey, payloadStr);
         }
-        
         enqCounter.get(topicKey).incrementAndGet();
     }
 
