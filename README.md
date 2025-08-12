@@ -65,7 +65,59 @@ MQTT Broker → ingest-service → Redis → writer-service → MongoDB
 
 - **Legacy Writer**: Traditional Redis queue processing
 - **BatchWriter**: Batch ingest queue processing
-- **MongoDB**: Multi-collection write support
+- **MongoDB**: Unified collection storage with optimized indexing
+
+## 🗄️ Database Design
+
+### MongoDB Architecture
+
+```yaml
+Database: MQTTLog
+Collection: robots
+Document Schema:
+  _id: ObjectId          # MongoDB auto-generated
+  time: Date            # Message ingestion time (indexed, TTL 30 days)
+  deviceid: String      # Device ID extracted from topic (indexed)
+  topic: String         # Message type: state/connection/cargo/error/networkIp (indexed)
+  raw: String           # Original MQTT message content
+```
+
+### Index Strategy
+
+```javascript
+// Automatic index creation on startup
+db.robots.createIndex({"time": 1}, {expireAfterSeconds: 2592000})  // TTL 30 days
+db.robots.createIndex({"deviceid": 1, "time": 1})                 // Device timeline
+db.robots.createIndex({"topic": 1, "time": 1})                    // Topic filtering
+db.robots.createIndex({"deviceid": 1, "topic": 1})                // Device + topic
+```
+
+### Query Examples
+
+```javascript
+// Get device latest states
+db.robots.find({"deviceid": "D00001", "topic": "state"}).sort({"time": -1}).limit(10)
+
+// Get all connection events
+db.robots.find({"topic": "connection"}).sort({"time": -1})
+
+// Device time-range analysis
+db.robots.find({
+  "deviceid": "D00001", 
+  "time": {"$gte": ISODate("2025-08-12"), "$lt": ISODate("2025-08-13")}
+})
+
+// Cross-topic device analysis
+db.robots.find({"deviceid": "D00001"}).sort({"time": -1})
+```
+
+### Benefits
+
+- **Unified Storage**: Single collection for all MQTT message types
+- **Device-Centric**: Optimized for device timeline and cross-topic analysis
+- **Performance**: Strategic indexing for fast queries
+- **Auto Cleanup**: 30-day TTL prevents unlimited data growth
+- **Scalability**: Ready for sharding on deviceid + time
 
 ## 📋 Configuration Example
 
@@ -73,6 +125,13 @@ MQTT Broker → ingest-service → Redis → writer-service → MongoDB
 # Feature toggle
 ingest:
   featureEnabled: true
+  
+# MongoDB configuration
+mongodb:
+  uri: "mongodb://192.168.123.46:27017"
+  database: "MQTTLog"
+  collection: "robots"
+  ttlSeconds: 2592000  # 30 days auto cleanup
   
 # Batch writing configuration
 writer:
@@ -82,12 +141,6 @@ writer:
     batchIntervalMs: 120000
     maxPerFlush: 500
     topics: [state, connection, networkIp, error, cargo]
-    topicMapping:
-      state: state_events
-      connection: connection_events
-      networkIp: network_events
-      error: error_events
-      cargo: cargo_events
 ```
 
 ## 🚀 Quick Start

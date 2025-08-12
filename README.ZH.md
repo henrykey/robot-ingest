@@ -63,7 +63,59 @@ MQTT Broker → ingest-service → Redis → writer-service → MongoDB
 
 - **Legacy Writer**: 传统Redis队列处理
 - **BatchWriter**: 批量ingest队列处理
-- **MongoDB**: 多collection写入支持
+- **MongoDB**: 统一集合存储，优化索引设计
+
+## 🗄️ 数据库设计
+
+### MongoDB架构
+
+```yaml
+数据库: MQTTLog
+集合: robots
+文档结构:
+  _id: ObjectId          # MongoDB自动生成
+  time: Date            # 消息摄取时间（索引，TTL 30天）
+  deviceid: String      # 从topic解析的设备ID（索引）
+  topic: String         # 消息类型：state/connection/cargo/error/networkIp（索引）
+  raw: String           # 原始MQTT消息内容
+```
+
+### 索引策略
+
+```javascript
+// 服务启动时自动创建索引
+db.robots.createIndex({"time": 1}, {expireAfterSeconds: 2592000})  // TTL 30天自动清理
+db.robots.createIndex({"deviceid": 1, "time": 1})                 // 设备时间线查询
+db.robots.createIndex({"topic": 1, "time": 1})                    // 主题时间过滤
+db.robots.createIndex({"deviceid": 1, "topic": 1})                // 设备+主题查询
+```
+
+### 查询示例
+
+```javascript
+// 获取设备最新状态
+db.robots.find({"deviceid": "D00001", "topic": "state"}).sort({"time": -1}).limit(10)
+
+// 获取所有连接事件
+db.robots.find({"topic": "connection"}).sort({"time": -1})
+
+// 设备时间范围分析
+db.robots.find({
+  "deviceid": "D00001", 
+  "time": {"$gte": ISODate("2025-08-12"), "$lt": ISODate("2025-08-13")}
+})
+
+// 设备跨主题分析
+db.robots.find({"deviceid": "D00001"}).sort({"time": -1})
+```
+
+### 设计优势
+
+- **统一存储**: 所有MQTT消息类型使用单一集合
+- **设备维度**: 优化设备时间线和跨主题分析
+- **高性能**: 战略性索引设计，提升查询速度
+- **自动清理**: 30天TTL防止数据无限增长
+- **可扩展**: 支持按deviceid+time分片扩展
 
 ## 📋 配置示例
 
@@ -71,6 +123,13 @@ MQTT Broker → ingest-service → Redis → writer-service → MongoDB
 # 特性开关
 ingest:
   featureEnabled: true
+  
+# MongoDB配置
+mongodb:
+  uri: "mongodb://192.168.123.46:27017"
+  database: "MQTTLog"
+  collection: "robots"
+  ttlSeconds: 2592000  # 30天自动清理
   
 # 批量写入配置
 writer:
@@ -80,12 +139,6 @@ writer:
     batchIntervalMs: 120000
     maxPerFlush: 500
     topics: [state, connection, networkIp, error, cargo]
-    topicMapping:
-      state: state_events
-      connection: connection_events
-      networkIp: network_events
-      error: error_events
-      cargo: cargo_events
 ```
 
 ## 🚀 快速开始
