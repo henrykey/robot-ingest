@@ -67,8 +67,12 @@ public class BatchWriter {
         this.supportedTopics = (List<String>) writerConfig.getOrDefault("topics", 
                 Arrays.asList("state", "connection", "networkIp", "error", "cargo"));
         
-        Map<String, String> collectionsConfig = (Map<String, String>) writerConfig.getOrDefault("collections", new HashMap<>());
-        this.topicCollectionMap = new HashMap<>(collectionsConfig);
+        // 新设计：统一使用robots集合
+        String robotsCollection = Cfg.get(config, "mongodb.collection", "robots");
+        this.topicCollectionMap = new HashMap<>();
+        for (String topic : supportedTopics) {
+            this.topicCollectionMap.put(topic, robotsCollection);
+        }
         
         // 初始化最后刷新时间
         long currentTime = System.currentTimeMillis();
@@ -214,7 +218,7 @@ public class BatchWriter {
      * 写入MongoDB
      */
     private void writeToMongoDB(String topic, List<String> batch, String triggerReason) {
-        String collectionName = topicCollectionMap.getOrDefault(topic, topic + "_events");
+        String collectionName = topicCollectionMap.getOrDefault(topic, "robots");
         
         try {
             Instant startTime = Instant.now();
@@ -222,11 +226,7 @@ public class BatchWriter {
             BulkOperations ops = mongo.bulkOps(BulkOperations.BulkMode.UNORDERED, collectionName);
             
             for (String json : batch) {
-                Map<String, Object> doc = new HashMap<>();
-                doc.put("raw", json);
-                doc.put("ingestedAt", new Date());
-                doc.put("topic", topic);  // 添加主题信息
-                doc.put("source", "step6-batch-writer");  // 标识数据来源
+                Map<String, Object> doc = createRobotDocument(topic, json, "step6-batch-writer");
                 ops.insert(doc);
             }
             
@@ -265,5 +265,64 @@ public class BatchWriter {
      */
     public boolean isRunning() {
         return running;
+    }
+    
+    /**
+     * 创建标准的机器人文档格式
+     */
+    private Map<String, Object> createRobotDocument(String topic, String rawJson, String source) {
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("time", new Date());
+        doc.put("deviceid", extractDeviceIdFromTopic(rawJson, topic));
+        doc.put("topic", topic);
+        doc.put("raw", rawJson);
+        return doc;
+    }
+    
+    /**
+     * 从原始JSON中提取设备ID
+     * 尝试多种方式解析设备ID
+     */
+    private String extractDeviceIdFromTopic(String rawJson, String topic) {
+        try {
+            // 方式1: 尝试从JSON中解析deviceId字段
+            if (rawJson.contains("\"deviceId\"")) {
+                int start = rawJson.indexOf("\"deviceId\"") + 11;
+                start = rawJson.indexOf("\"", start) + 1;
+                int end = rawJson.indexOf("\"", start);
+                if (end > start) {
+                    return rawJson.substring(start, end);
+                }
+            }
+            
+            // 方式2: 尝试解析robotId字段
+            if (rawJson.contains("\"robotId\"")) {
+                int start = rawJson.indexOf("\"robotId\"") + 10;
+                start = rawJson.indexOf("\"", start) + 1;
+                int end = rawJson.indexOf("\"", start);
+                if (end > start) {
+                    return rawJson.substring(start, end);
+                }
+            }
+            
+            // 方式3: 尝试解析id字段
+            if (rawJson.contains("\"id\"")) {
+                int start = rawJson.indexOf("\"id\"") + 5;
+                start = rawJson.indexOf("\"", start) + 1;
+                int end = rawJson.indexOf("\"", start);
+                if (end > start) {
+                    String id = rawJson.substring(start, end);
+                    // 只有当id看起来像设备ID时才使用
+                    if (id.matches("^[A-Z0-9]+$")) {
+                        return id;
+                    }
+                }
+            }
+            
+            // 备用方案：返回默认值
+            return "unknown";
+        } catch (Exception e) {
+            return "unknown";
+        }
     }
 }

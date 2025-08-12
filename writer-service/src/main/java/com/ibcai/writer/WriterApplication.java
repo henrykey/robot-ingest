@@ -30,8 +30,9 @@ public class WriterApplication {
         int redisPort = Cfg.get(cfg, "redis.port", 6379);
 
         String mongoUri = Cfg.get(cfg, "mongodb.uri", "mongodb://127.0.0.1:27017");
-        String mongoDb = Cfg.get(cfg, "mongodb.database", "robotdb");
-        String stateEvents = Cfg.get(cfg, "mongodb.collections.stateEvents", "state_events");
+        String mongoDb = Cfg.get(cfg, "mongodb.database", "MQTTLog");
+        String robotsCollection = Cfg.get(cfg, "mongodb.collection", "robots");
+        int ttlSeconds = Cfg.get(cfg, "mongodb.ttlSeconds", 2592000); // 30天默认TTL
 
         // 旧的batch配置（保持兼容性）
         int sizeTrigger = Cfg.get(cfg, "batch.sizeTrigger", 1000);
@@ -43,6 +44,9 @@ public class WriterApplication {
         RedisCommands<String,String> R = rconn.sync();
 
         MongoTemplate mongo = new MongoTemplate(new SimpleMongoClientDatabaseFactory(mongoUri + "/" + mongoDb));
+
+        // 创建索引和TTL
+        createIndexes(mongo, robotsCollection, ttlSeconds);
 
         // Step 6: 启动新的批量Writer（如果启用）
         Map<String, Object> writerConfig = (Map<String, Object>) cfg.getOrDefault("writer", new HashMap<>());
@@ -73,12 +77,9 @@ public class WriterApplication {
                 }
                 if (!batch.isEmpty()) {
                     Instant t0 = Instant.now();
-                    BulkOperations ops = mongo.bulkOps(BulkOperations.BulkMode.UNORDERED, stateEvents);
+                    BulkOperations ops = mongo.bulkOps(BulkOperations.BulkMode.UNORDERED, robotsCollection);
                     for (String json : batch) {
-                        Map<String,Object> doc = new HashMap<>();
-                        doc.put("raw", json);
-                        doc.put("ingestedAt", new Date());
-                        doc.put("source", "legacy-writer");  // 标识来源
+                        Map<String,Object> doc = createRobotDocument("state", json, "legacy-writer");
                         ops.insert(doc);
                     }
                     ops.execute();
@@ -95,6 +96,72 @@ public class WriterApplication {
             }
             
             Thread.sleep(50);
+        }
+    }
+    
+    /**
+     * 创建索引和TTL策略
+     */
+    private static void createIndexes(MongoTemplate mongo, String collection, int ttlSeconds) {
+        try {
+            // 时间索引 + TTL自动清理
+            mongo.getCollection(collection).createIndex(
+                new org.bson.Document("time", 1),
+                new com.mongodb.client.model.IndexOptions().expireAfter((long)ttlSeconds, java.util.concurrent.TimeUnit.SECONDS)
+            );
+            
+            // 设备+时间复合索引
+            mongo.getCollection(collection).createIndex(
+                new org.bson.Document("deviceid", 1).append("time", 1)
+            );
+            
+            // 主题+时间复合索引
+            mongo.getCollection(collection).createIndex(
+                new org.bson.Document("topic", 1).append("time", 1)
+            );
+            
+            // 设备+主题复合索引
+            mongo.getCollection(collection).createIndex(
+                new org.bson.Document("deviceid", 1).append("topic", 1)
+            );
+            
+            log.info("🔧 MongoDB indexes created successfully for collection: {}", collection);
+        } catch (Exception e) {
+            log.warn("⚠️ Failed to create indexes (may already exist): {}", e.getMessage());
+        }
+    }
+    
+    /**
+     * 创建标准的机器人文档格式
+     */
+    private static Map<String, Object> createRobotDocument(String topic, String rawJson, String source) {
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("time", new Date());
+        doc.put("deviceid", extractDeviceIdFromRaw(rawJson, topic));
+        doc.put("topic", topic);
+        doc.put("raw", rawJson);
+        return doc;
+    }
+    
+    /**
+     * 从原始JSON和主题中提取设备ID
+     */
+    private static String extractDeviceIdFromRaw(String rawJson, String topic) {
+        try {
+            // 尝试从JSON中解析deviceId字段
+            if (rawJson.contains("\"deviceId\"")) {
+                int start = rawJson.indexOf("\"deviceId\"") + 11;
+                start = rawJson.indexOf("\"", start) + 1;
+                int end = rawJson.indexOf("\"", start);
+                if (end > start) {
+                    return rawJson.substring(start, end);
+                }
+            }
+            
+            // 备用方案：返回默认值
+            return "unknown";
+        } catch (Exception e) {
+            return "unknown";
         }
     }
 }

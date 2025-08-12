@@ -66,15 +66,9 @@ redis:
 
 mongodb:
   uri: "mongodb://192.168.123.46:27017"
-  database: "robotdb"
-  collections:
-    latest: "robot_latest_state"
-    stateEvents: "state_events"
-    connectionEvents: "connection_events"
-    networkIpEvents: "network_ip_events"
-    errorEvents: "error_events"
-    cargoEvents: "cargo_events"
-    ingestMetrics: "ingest_metrics"
+  database: "MQTTLog"
+  collection: "robots"                  # 统一集合名称
+  ttlSeconds: 2592000                   # 30天TTL自动清理
   writeConcern:
     w: 1
     j: false
@@ -115,12 +109,7 @@ writer:
     - "networkIp"
     - "error"
     - "cargo"
-  collections:                          # 主题到MongoDB集合的映射
-    state: "state_events"
-    connection: "connection_events"
-    networkIp: "network_ip_events"
-    error: "error_events"
-    cargo: "cargo_events"
+  collection: "robots"                  # 统一集合名称（与上面保持一致）
 
 http:
   port: 8080
