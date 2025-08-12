@@ -1,4 +1,4 @@
-# Robot Ingest Pipeline v1.1.2 (IBC AI CO.)
+# 机器人数据摄取管道 v1.1.3 (IBC AI CO.)
 
 ![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)
 ![Status](https://img.shields.io/badge/status-production--ready-green.svg)
@@ -267,11 +267,128 @@ CFG__INGEST__FEATURE_ENABLED=true
 
 **注意**：使用双下划线 `__` 分隔配置层级。
 
+### MongoDB 配置
+
+#### MongoDB - 有源码情况（推荐）
+
+##### MongoDB 方法1：修改 config.yml
+
+```bash
+# 编辑配置文件
+vim config.yml
+
+# 修改MongoDB设置
+mongodb:
+  uri: "mongodb://新的IP:新的端口"
+  database: "MQTTLog"
+  collection: "robots"
+  ttlSeconds: 2592000
+
+# 重启writer服务
+docker-compose restart writer-service
+```
+
+##### MongoDB 方法2：环境变量覆盖
+
+```bash
+# 使用环境变量
+export CFG__MONGODB__URI="mongodb://新的IP:新的端口"
+export CFG__MONGODB__DATABASE="新数据库名"
+
+# 或在 docker-compose.yml 中添加
+# writer-service:
+#   environment:
+#     - CFG__MONGODB__URI=mongodb://新的IP:新的端口
+#     - CFG__MONGODB__DATABASE=新数据库名
+
+# 重启writer服务
+docker-compose restart writer-service
+```
+
+#### MongoDB - 仅有镜像/容器情况（生产部署）
+
+##### MongoDB 方法1：环境变量（推荐）
+
+```bash
+# 停止当前容器
+docker stop <writer_container_name>
+
+# 使用环境变量启动
+docker run -d \
+  --name <writer_container_name> \
+  -e CFG__MONGODB__URI="mongodb://新的IP:新的端口" \
+  -e CFG__MONGODB__DATABASE="新数据库名" \
+  -e CFG__MONGODB__COLLECTION="robots" \
+  <writer_image_name>
+```
+
+##### MongoDB 方法2：挂载配置文件
+
+```bash
+# 从容器复制配置文件
+docker cp <writer_container_name>:/app/config.yml ./config.yml
+
+# 编辑MongoDB配置
+vim config.yml
+
+# 重新启动并挂载配置
+docker stop <writer_container_name>
+docker run -d \
+  --name <writer_container_name> \
+  -v $(pwd)/config.yml:/app/config.yml \
+  <writer_image_name>
+```
+
+##### MongoDB 方法3：Docker Compose 配合 .env 文件
+
+```bash
+# 创建 .env 文件
+cat > .env << EOF
+MONGODB_URI=mongodb://新的IP:新的端口
+MONGODB_DATABASE=新数据库名
+MONGODB_COLLECTION=robots
+MONGODB_TTL_SECONDS=2592000
+EOF
+
+# 在 docker-compose.yml 中使用
+# services:
+#   writer-service:
+#     environment:
+#       - CFG__MONGODB__URI=${MONGODB_URI}
+#       - CFG__MONGODB__DATABASE=${MONGODB_DATABASE}
+#       - CFG__MONGODB__COLLECTION=${MONGODB_COLLECTION}
+#       - CFG__MONGODB__TTL_SECONDS=${MONGODB_TTL_SECONDS}
+
+# 重启服务
+docker-compose up -d
+```
+
+### 常用 MongoDB 环境变量
+
+```bash
+# 连接设置
+CFG__MONGODB__URI=mongodb://192.168.123.46:27017
+CFG__MONGODB__DATABASE=MQTTLog
+CFG__MONGODB__COLLECTION=robots
+
+# 性能设置
+CFG__MONGODB__TTL_SECONDS=2592000
+CFG__WRITER__BATCH__BATCH_SIZE=100
+CFG__WRITER__BATCH__BATCH_INTERVAL_MS=120000
+CFG__WRITER__BATCH__MAX_PER_FLUSH=500
+
+# 认证（如需要）
+CFG__MONGODB__URI=mongodb://用户名:密码@192.168.123.46:27017/MQTTLog
+```
+
 ### 验证配置
 
 ```bash
 # 查看容器日志确认MQTT连接
 docker logs <container_name> | grep -i mqtt
+
+# 查看容器日志确认MongoDB连接
+docker logs <writer_container_name> | grep -i mongo
 
 # 验证容器内环境变量
 docker exec <container_name> printenv | grep CFG__

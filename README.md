@@ -1,4 +1,4 @@
-# Robot Ingest Pipeline v1.1.2 (IBC AI CO.)
+# Robot Ingest Pipeline v1.1.3 (IBC AI CO.)
 
 ![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)
 ![Status](https://img.shields.io/badge/status-production--ready-green.svg)
@@ -269,11 +269,128 @@ CFG__INGEST__FEATURE_ENABLED=true
 
 **Note**: Use double underscores `__` to separate configuration levels.
 
+### MongoDB Configuration
+
+#### MongoDB - With Source Code (Recommended)
+
+##### MongoDB Method 1: Edit config.yml
+
+```bash
+# Edit configuration file
+vim config.yml
+
+# Modify MongoDB settings
+mongodb:
+  uri: "mongodb://NEW_IP:NEW_PORT"
+  database: "MQTTLog"
+  collection: "robots"
+  ttlSeconds: 2592000
+
+# Restart writer service
+docker-compose restart writer-service
+```
+
+##### MongoDB Method 2: Environment Variable Override
+
+```bash
+# Use environment variables
+export CFG__MONGODB__URI="mongodb://NEW_IP:NEW_PORT"
+export CFG__MONGODB__DATABASE="NewDatabaseName"
+
+# Or add to docker-compose.yml
+# writer-service:
+#   environment:
+#     - CFG__MONGODB__URI=mongodb://NEW_IP:NEW_PORT
+#     - CFG__MONGODB__DATABASE=NewDatabaseName
+
+# Restart writer service
+docker-compose restart writer-service
+```
+
+#### MongoDB - With Image/Container Only (Production Deployment)
+
+##### MongoDB Method 1: Environment Variables (Recommended)
+
+```bash
+# Stop current container
+docker stop <writer_container_name>
+
+# Start with environment variables
+docker run -d \
+  --name <writer_container_name> \
+  -e CFG__MONGODB__URI="mongodb://NEW_IP:NEW_PORT" \
+  -e CFG__MONGODB__DATABASE="NewDatabaseName" \
+  -e CFG__MONGODB__COLLECTION="robots" \
+  <writer_image_name>
+```
+
+##### MongoDB Method 2: Mount Configuration File
+
+```bash
+# Copy config from container
+docker cp <writer_container_name>:/app/config.yml ./config.yml
+
+# Edit MongoDB configuration
+vim config.yml
+
+# Restart with mounted config
+docker stop <writer_container_name>
+docker run -d \
+  --name <writer_container_name> \
+  -v $(pwd)/config.yml:/app/config.yml \
+  <writer_image_name>
+```
+
+##### MongoDB Method 3: Docker Compose with .env File
+
+```bash
+# Create .env file
+cat > .env << EOF
+MONGODB_URI=mongodb://NEW_IP:NEW_PORT
+MONGODB_DATABASE=NewDatabaseName
+MONGODB_COLLECTION=robots
+MONGODB_TTL_SECONDS=2592000
+EOF
+
+# Use in docker-compose.yml
+# services:
+#   writer-service:
+#     environment:
+#       - CFG__MONGODB__URI=${MONGODB_URI}
+#       - CFG__MONGODB__DATABASE=${MONGODB_DATABASE}
+#       - CFG__MONGODB__COLLECTION=${MONGODB_COLLECTION}
+#       - CFG__MONGODB__TTL_SECONDS=${MONGODB_TTL_SECONDS}
+
+# Restart service
+docker-compose up -d
+```
+
+### Common MongoDB Environment Variables
+
+```bash
+# Connection settings
+CFG__MONGODB__URI=mongodb://192.168.123.46:27017
+CFG__MONGODB__DATABASE=MQTTLog
+CFG__MONGODB__COLLECTION=robots
+
+# Performance settings
+CFG__MONGODB__TTL_SECONDS=2592000
+CFG__WRITER__BATCH__BATCH_SIZE=100
+CFG__WRITER__BATCH__BATCH_INTERVAL_MS=120000
+CFG__WRITER__BATCH__MAX_PER_FLUSH=500
+
+# Authentication (if required)
+CFG__MONGODB__URI=mongodb://username:password@192.168.123.46:27017/MQTTLog
+```
+
 ### Verify Configuration
 
 ```bash
 # Check container logs for MQTT connection
 docker logs <container_name> | grep -i mqtt
+
+# Check container logs for MongoDB connection
+docker logs <writer_container_name> | grep -i mongo
 
 # Verify environment variables in container
 docker exec <container_name> printenv | grep CFG__
