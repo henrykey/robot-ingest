@@ -167,12 +167,116 @@ docker compose logs -f ingest
 docker compose logs -f writer
 ```
 
-## ⚙️ Environment Variable Override
+## ⚙️ Configuration Management
 
-Use environment variables to override configuration:
+### MQTT Broker Configuration
+
+#### With Source Code (Recommended)
+
+##### Method 1: Edit config.yml
 
 ```bash
-CFG__mqtt__brokerUrl=tcp://192.168.123.61:1883
+# Edit configuration file
+vim config.yml
+
+# Modify brokerUrl
+mqtt:
+  brokerUrl: "tcp://NEW_IP:NEW_PORT"
+
+# Restart container
+docker-compose restart ingest-service
+```
+
+##### Method 2: Environment Variable Override
+
+```bash
+# Use environment variable
+export CFG__MQTT__BROKER_URL="tcp://NEW_IP:NEW_PORT"
+
+# Or add to docker-compose.yml
+# ingest-service:
+#   environment:
+#     - CFG__MQTT__BROKER_URL=tcp://NEW_IP:NEW_PORT
+
+# Restart container
+docker-compose restart ingest-service
+```
+
+#### With Image/Container Only (Production Deployment)
+
+##### Method 1: Environment Variables (Recommended)
+
+```bash
+# Stop current container
+docker stop <container_name>
+
+# Start with environment variable
+docker run -d \
+  --name <container_name> \
+  -e CFG__MQTT__BROKER_URL="tcp://NEW_IP:NEW_PORT" \
+  <image_name>
+```
+
+##### Method 2: Mount Configuration File
+
+```bash
+# Copy config from container
+docker cp <container_name>:/app/config.yml ./config.yml
+
+# Edit configuration
+vim config.yml
+
+# Restart with mounted config
+docker stop <container_name>
+docker run -d \
+  --name <container_name> \
+  -v $(pwd)/config.yml:/app/config.yml \
+  <image_name>
+```
+
+##### Method 3: Docker Compose with .env File
+
+```bash
+# Create .env file
+echo "MQTT_BROKER_URL=tcp://NEW_IP:NEW_PORT" > .env
+
+# Use in docker-compose.yml
+# services:
+#   ingest-service:
+#     environment:
+#       - CFG__MQTT__BROKER_URL=${MQTT_BROKER_URL}
+
+# Restart service
+docker-compose up -d
+```
+
+### Configuration Priority
+
+```text
+Environment Variables > config.yml > Default Values
+```
+
+### Environment Variable Mapping
+
+All configuration can be overridden using `CFG__` prefix:
+
+```bash
+CFG__MQTT__BROKER_URL=tcp://192.168.123.61:1883
+CFG__MONGODB__URI=mongodb://192.168.123.46:27017
+CFG__REDIS__HOST=192.168.123.45
+CFG__INGEST__FEATURE_ENABLED=true
+```
+
+**Note**: Use double underscores `__` to separate configuration levels.
+
+### Verify Configuration
+
+```bash
+# Check container logs for MQTT connection
+docker logs <container_name> | grep -i mqtt
+
+# Verify environment variables in container
+docker exec <container_name> printenv | grep CFG__
 ```
 
 ## 📊 Monitoring & Statistics

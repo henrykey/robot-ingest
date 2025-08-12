@@ -165,12 +165,116 @@ docker compose logs -f ingest
 docker compose logs -f writer
 ```
 
-## ⚙️ 环境变量覆盖
+## ⚙️ 配置管理
 
-使用环境变量覆盖配置，如:
+### MQTT Broker 配置
+
+#### 有源码情况（推荐）
+
+##### 方法1：修改 config.yml
 
 ```bash
-CFG__mqtt__brokerUrl=tcp://192.168.123.61:1883
+# 编辑配置文件
+vim config.yml
+
+# 修改 brokerUrl
+mqtt:
+  brokerUrl: "tcp://新的IP:新的端口"
+
+# 重启容器
+docker-compose restart ingest-service
+```
+
+##### 方法2：环境变量覆盖
+
+```bash
+# 使用环境变量
+export CFG__MQTT__BROKER_URL="tcp://新的IP:新的端口"
+
+# 或在 docker-compose.yml 中添加
+# ingest-service:
+#   environment:
+#     - CFG__MQTT__BROKER_URL=tcp://新的IP:新的端口
+
+# 重启容器
+docker-compose restart ingest-service
+```
+
+#### 仅有镜像/容器情况（生产部署）
+
+##### 方法1：环境变量（推荐）
+
+```bash
+# 停止当前容器
+docker stop <container_name>
+
+# 使用环境变量启动
+docker run -d \
+  --name <container_name> \
+  -e CFG__MQTT__BROKER_URL="tcp://新的IP:新的端口" \
+  <image_name>
+```
+
+##### 方法2：挂载配置文件
+
+```bash
+# 从容器复制配置文件
+docker cp <container_name>:/app/config.yml ./config.yml
+
+# 编辑配置文件
+vim config.yml
+
+# 重新启动并挂载配置
+docker stop <container_name>
+docker run -d \
+  --name <container_name> \
+  -v $(pwd)/config.yml:/app/config.yml \
+  <image_name>
+```
+
+##### 方法3：Docker Compose 配合 .env 文件
+
+```bash
+# 创建 .env 文件
+echo "MQTT_BROKER_URL=tcp://新的IP:新的端口" > .env
+
+# 在 docker-compose.yml 中使用
+# services:
+#   ingest-service:
+#     environment:
+#       - CFG__MQTT__BROKER_URL=${MQTT_BROKER_URL}
+
+# 重启服务
+docker-compose up -d
+```
+
+### 配置优先级
+
+```text
+环境变量 > config.yml > 默认值
+```
+
+### 环境变量映射
+
+所有配置都可以通过 `CFG__` 前缀的环境变量覆盖：
+
+```bash
+CFG__MQTT__BROKER_URL=tcp://192.168.123.61:1883
+CFG__MONGODB__URI=mongodb://192.168.123.46:27017
+CFG__REDIS__HOST=192.168.123.45
+CFG__INGEST__FEATURE_ENABLED=true
+```
+
+**注意**：使用双下划线 `__` 分隔配置层级。
+
+### 验证配置
+
+```bash
+# 查看容器日志确认MQTT连接
+docker logs <container_name> | grep -i mqtt
+
+# 验证容器内环境变量
+docker exec <container_name> printenv | grep CFG__
 ```
 
 ## 📊 监控与统计
