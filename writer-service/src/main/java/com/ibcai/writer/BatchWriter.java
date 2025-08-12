@@ -261,6 +261,27 @@ public class BatchWriter {
     }
     
     /**
+     * 获取处理的消息总数
+     */
+    public long getProcessedCount() {
+        return totalProcessed.get();
+    }
+    
+    /**
+     * 获取批次总数
+     */
+    public long getBatchCount() {
+        return totalBatches.get();
+    }
+    
+    /**
+     * 获取错误总数
+     */
+    public long getErrorCount() {
+        return totalErrors.get();
+    }
+    
+    /**
      * 检查是否正在运行
      */
     public boolean isRunning() {

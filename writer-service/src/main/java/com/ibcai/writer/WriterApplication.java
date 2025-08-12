@@ -89,9 +89,18 @@ public class WriterApplication {
                 lastFlush = System.currentTimeMillis();
             }
             
-            // 每5分钟输出统计信息（减少日志频率）
+            // 智能统计输出：只在有活动或首次启动时输出
             if (batchWriter != null && (System.currentTimeMillis() - lastStats) >= 300000) {
-                log.info("📊 Writer Stats: {}", batchWriter.getStats());
+                String stats = batchWriter.getStats();
+                boolean hasActivity = batchWriter.getProcessedCount() > 0 || batchWriter.getBatchCount() > 0;
+                
+                // 只在有活动或有错误时才输出INFO级别日志
+                if (hasActivity || batchWriter.getErrorCount() > 0) {
+                    log.info("📊 Writer Stats: {}", stats);
+                } else {
+                    // 无活动时降级为DEBUG级别
+                    log.debug("📊 Writer Stats (idle): {}", stats);
+                }
                 lastStats = System.currentTimeMillis();
             }
             
