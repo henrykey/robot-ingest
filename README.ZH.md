@@ -1,4 +1,4 @@
-# Robot Ingest Pipeline v1.0.0 (IBC-AI CO.)
+# Robot Ingest Pipeline v1.1.2 (IBC AI CO.)
 
 ![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)
 ![Status](https://img.shields.io/badge/status-production--ready-green.svg)
@@ -253,4 +253,4 @@ dedupe:
 
 ## 📄 许可证
 
-IBC-AI CO. 内部项目
+IBC AI CO. 内部项目
