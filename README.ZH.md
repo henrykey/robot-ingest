@@ -1,4 +1,4 @@
-# 机器人数据摄取管道 v1.1.3 (IBC AI CO.)
+# 机器人数据摄取管道 v1.1.4 (IBC AI CO.)
 
 ![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)
 ![Status](https://img.shields.io/badge/status-production--ready-green.svg)
